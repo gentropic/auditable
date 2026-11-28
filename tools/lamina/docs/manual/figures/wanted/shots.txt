@@ -1,7 +1,11 @@
 # the screenshots the book asks for: name | what the shot shows (scenes/*.mjs stage them)
 empty | the empty screen of a fresh lamina
 overview | the sample block model as it opens: sorted by Cu_pct, Cu_pct heat-mapped, distributions above the headers
-interpretation | the interpretation popover on the sample (Detected facts + the override settings)
+interpretation | the interpretation popover on a small semicolon CSV with a preamble, a quoted line break and a short row (facts + the first-lines pane + settings)
+views | the sample filtered to SULPHIDE, with the complement view in a split beside it
+pin | a group-by result pinned under the sample's (filtered) table
+raw | a small CRLF CSV beside its raw lines (quoted line break, trailing space, tab)
+lens-slots | applying a lens whose two files lamina can't find: the slot dialog
 gutter | the header strip of the sample: histograms (log), the LITO top-values bar, flat dx/dy/dz glyphs
 columns-panel | the columns panel open on the sample
 drawer | the filter drawer for LITO in ("SULPHIDE", "TRANSITION") and Cu_pct between 0.5 and 2

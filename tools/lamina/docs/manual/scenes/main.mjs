@@ -8,7 +8,53 @@ export const SCENES = {
   overview: { stage: async ({ sample }) => { await sample(); return { wait: 1500 }; } },
 
   interpretation: {
-    stage: async ({ p, sample }) => { await sample(); await p.click('#kindBadge'); return { el: '#opts', wait: 500 }; },
+    stage: async ({ p, openText }) => {
+      await openText('assays.csv', '# exported 2026-11-20\nHOLE;FROM;TO;FE;NOTE\nDH1;0,0;1,5;45,2;"two\nlines"\nDH1;1,5;3,0;51,7;ok\nDH2;0,0;2,0;38,9\nDH2;2,0;4,5;40,1;ok\n');
+      await p.click('#kindBadge');
+      return { el: '#opts', wait: 700 };
+    },
+  },
+
+  views: {
+    viewport: { width: 1440, height: 760 },
+    stage: async ({ ev, sample }) => {
+      await sample();
+      await ev(() => window.lamina.filter('LITO = "SULPHIDE"'));
+      await ev(() => window._lamina.complementView());
+      return { wait: 2500 };
+    },
+  },
+
+  pin: {
+    viewport: { width: 1440, height: 900 },
+    stage: async ({ p, ev, sample }) => {
+      await sample();
+      await ev(() => window.lamina.filter('LITO = "SULPHIDE" or LITO = "TRANSITION"'));
+      await ev(() => window._lamina.openGroupBy());
+      const cu = await ev(() => window.lamina.columns().findIndex((c) => c.name === 'Cu_pct'));
+      await p.selectOption('.gb-value', String(cu));
+      await p.click('#gbRun'); await p.waitForTimeout(1500);
+      await p.click('#helpPin');
+      return { wait: 1500 };
+    },
+  },
+
+  raw: {
+    viewport: { width: 1440, height: 520 },
+    stage: async ({ ev, openText }) => {
+      await openText('notes.csv', 'id,name,note\r\n1,"Smith, J.","said ""hi"""\r\n2,"multi\r\nline",x\r\n3,OXIDE ,\tend\r\n');
+      await ev(() => window._lamina.openRawOfFocused('lines'));
+      return { wait: 1500 };
+    },
+  },
+
+  'lens-slots': {
+    stage: async ({ ev }) => {
+      ev(() => { window.lamina.applyLens({ kind: 'lamina-lens', version: 2, sources: [
+        { id: 's1', file: 'model_2025-09.csv', size: 412345678, views: [{ id: 'v1', filter: 'LITO = "SULPHIDE"' }] },
+        { id: 's2', file: 'collars.csv', size: 48211, views: [{ id: 'v2' }] }] }).catch(() => {}); });
+      return { el: '.help-box', wait: 1200 };
+    },
   },
 
   gutter: {

@@ -1,84 +1,114 @@
 \chapter{Lenses}\label{ch:lens}
 \begin{goals}
-\textbf{In this chapter} you save the way you are looking at a table, not the table, and apply it to the
-next file of the same shape.
+\textbf{In this chapter} you save the way you are looking at your files, not the files, and bring it back:
+on the next export of the same shape, on another machine, or the next time you open lamina.
 \end{goals}
 
-A \term{lens} is a view written down: the filter, the sort, the calculated columns, the formats and
-colour scales, which columns are hidden, their order and widths, the grade–tonnage setup, and how the file
-had to be read. It is a small file, \file{.lamina}, of plain JSON. It holds none of the data.
+A \term{lens} is a view written down: for each file, its views (filter, sort, calculated columns, formats,
+colour scales, hidden and frozen columns, column order and widths, the grade–tonnage setup, raw views,
+workbook sheets), how the file had to be read, and how the tabs were arranged. It is a small file,
+\file{.lamina}, of plain JSON, and lamina's one file of its own. It holds none of the data.
 
-The point is the next file. This month's model export has the same columns as last month's; a lens made
-on last month's gives this month's the same filter, the same derived columns, the same report, in one
-step. A lens can also be passed to a colleague, who opens it on their copy of the file and sees what you
-saw.
+The point is the next file. This month's export has the same columns as last month's; a lens made on last
+month's gives this month's the same views in one step. A lens can be passed to a colleague, who opens it
+on their copy of the file and sees what you saw.
 
-\begin{pending}[title={\faHourglassHalf\enskip Lenses are growing}]
-This chapter describes the lens as it is today: one view of one file. Lenses are being extended to hold
-several views and several files, with their arrangement in tabs and splits, so that a lens can also bring
-back a whole session; and recent files will restore their last view by themselves
-(\file{spec\_inbox/lamina-workspace-spec.md}, §4). The chapter will be rewritten when that lands.
-\end{pending}
+\section{What a lens holds}\label{sec:lens-holds}
 
-\section{What a lens keeps}\label{sec:lens-keeps}
+A lens lists \term{sources}: the files it reads, each named by its file name and size. For each source,
+how the file is read (only the settings you changed, \cref{sec:interpretation}) and its views. For each
+view:
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}lL@{}}
 \toprule
 \sffamily\bfseries kept & \sffamily\bfseries as \\
 \midrule
-how the file is read & only the settings you changed in the interpretation popover: delimiter, header,
-decimal, skip, comment (\cref{sec:interpretation}) \\
 the filter & its text \\
 the sort & each key's column name and direction \\
 calculated columns & each one's name, expression and type \\
 per column & number format, colour scale (palette, scale, clipping, reversal), hidden, width, a
 text/number override \\
-the column order & when you reordered the columns \\
-frozen columns & which ones \\
-grade–tonnage & the factors and the density unit, the group, and each grade with its unit, cutoffs and
-plot ranges, when grade–tonnage was set up in the session \\
+the column order, frozen columns & when you changed them \\
+grade–tonnage & the factors and density unit, the group, each grade with its unit, cutoffs and ranges \\
+a sheet & which sheet of a workbook the view shows \\
+a raw view & lines or hex (\cref{ch:raw}), and its filter \\
 \bottomrule
 \end{tabularx}
 \end{center}
 
-Everything refers to columns by name. A colour scale's range isn't kept: it belongs to the data, and is
-worked out afresh from the file the lens is applied to.
+and, for the whole lens, the \term{layout}: which views sit in which tabs and splits. Everything refers to
+columns by name. A colour scale's range isn't kept: it belongs to the data, and is worked out afresh.
 
-\section{Saving and applying}\label{sec:lens-use}
+\section{Saving}\label{sec:lens-save}
 
-\menu{Data>Save lens…} writes the current view as a lens, named after the file:
-\file{model\_2025-10.lamina} for \file{model\_2025-10.csv}. \menu{Data>Apply lens…} picks a lens and
-applies it to the open table. Opening a \file{.lamina} file any other way (\menu{File>Open…}, a drop, the
-operating system's \emph{Open with} where lamina is installed) applies it too; opened with no table
-open, it waits, and is applied to the next file you open.
+\begin{description}
+\item[\menu{Data>Save lens…}] the focused file's views: \file{model\_2025-10.lamina} for
+\file{model\_2025-10.csv}.
+\item[\menu{Data>Save a lens of every open file…}] every open file and its views, with the layout: a
+whole working session in one file.
+\end{description}
 
-Applying a lens re-reads the file first when the lens's reading settings differ from the current ones,
-then adds the calculated columns, then the filter, the sort and the rest.
+\section{Applying}\label{sec:lens-apply}
+
+\menu{Data>Apply lens…}, or open a \file{.lamina} any other way (\menu{File>Open…}, a drop, the operating
+system's \emph{Open with} where lamina is installed). A lens doesn't need a table open first. For each of
+its sources, lamina finds a file to apply it to, in this order:
+
+\begin{enumerate}
+\item A lens with one source, applied while a file is focused: that file. This is the lens made on last
+month's export, applied to this month's.
+\item A file already open with the source's name.
+\item A recent file with the source's name and size whose handle lamina kept (\cref{sec:recents}); the
+browser asks you once for permission to read it.
+\item Otherwise, a dialog: \ui{Open the files this lens reads}, one slot per file still missing, each
+labelled with the name and size the lens remembers. Drop a file onto a slot or click \ui{Pick…}; any
+file with the same columns will do. \ui{Open} applies the lens.
+\end{enumerate}
+
+\shot[0.6\linewidth]{lens-slots}{Applying a lens whose files lamina can't find: one slot per file.}
+
+Then, per source: the file is read again if the lens's reading settings differ, its views are made (more
+tabs if the lens has more views than are open, the sheets it names, the raw views), each view gets its
+filter, sort, columns and the rest, and the tabs are arranged as the layout says. Open tabs the lens
+doesn't mention keep their place.
 
 \subsection{What doesn't match}\label{sec:lens-skips}
 
-A name in the lens that the file doesn't have (a column for a format, a sort key, a grade) is skipped,
-and the status line says what was: \code{lens applied (from model\_2025-09.csv) — skipped: …}. lamina never
-applies a setting to a different column than the one it was made on. A calculated column whose name the
-file already uses as a column is skipped the same way. Names are matched without regard to case, as in
-expressions.
+A name in the lens that the file doesn't have (a column for a format, a sort key, a grade, a sheet) is
+skipped, and the status line says what was: \code{lens applied (from model\_2025-09.csv) — skipped: …}.
+lamina never applies a setting to a different column than the one it was made on. A calculated column
+whose name the file already uses is skipped the same way. Names are matched without regard to case, as
+in expressions.
 
-When a lens was made on another file, the status line names it: \code{(from model\_2025-09.csv)}.
+A filter or a calculated column that uses a column the file lacks is still added, and reports the unknown
+column, as it would if you had typed it (\cref{sec:filter-errors}).
 
-\begin{note}
-A filter or a calculated column that uses a column the new file lacks is still added, and then reports an
-unknown column, as it would if you had typed it (\cref{sec:filter-errors}). Fix the expression, or the
-file.
-\end{note}
+\subsection{Older lenses}
+
+Lenses saved before views and panels (one view of one file, \code{version: 1}) still load, as a lens with
+one source and one view.
+
+\section{Your last views come back}\label{sec:last-views}
+
+lamina keeps, for each file you open, the views you had of it, the same way a lens does, on your machine
+(\cref{sec:local-state}). Open the file again and they come back, and the status line says
+\ui{your last view of this file, brought back}. Nothing is saved for a file whose views you didn't
+change.
+
+And when lamina starts with nothing open, the empty screen offers the files you had open last time:
+\ui{↻ reopen the 3 files you had open (model.csv, assays.xlsx, collars.csv)}. Click it and they reopen,
+with their views and layout, as a lens would (asking for any it can't find).
+
+Both are part of the recents: \menu{File>Remember recent files} off turns them off.
 
 \begin{tryit}
-Carry a view from one file to the next.
+Carry a whole session to the next month.
 \begin{enumerate}
 \item In the sample, filter \code{LITO = "SULPHIDE"}, add the calculated column \col{t} (\code{dx * dy *
-dz * density}), hide \col{ID}, and colour \col{Au\_gpt}.
-\item \menu{Data>Save lens…}. You get \file{sample\_blockmodel.lamina}.
-\item Close lamina and open it again. Open the sample, then drop the \file{.lamina} file onto the window.
-The filter, the column, the hidden \col{ID} and the colours come back.
+dz * density}), and open \menu{View>New view of the rows this filter leaves out}.
+\item \menu{Data>Save a lens of every open file…}. You get \file{sample\_blockmodel.lamina}.
+\item Close both tabs, open the sample again, and drop the lens on the window. The two views come back
+side by side, each with its filter, and both with \col{t}.
 \end{enumerate}
 \end{tryit}

@@ -55,12 +55,8 @@ grade. When \ui{mean} and \ui{wmean} disagree, that is worth knowing before anyt
 \section{From a group to its rows}
 
 Click a group's row: the window closes and the grid is filtered to that group (\code{LITO == "OXIDE"}, or
-\code{LITO is blank} for the blank group).
-
-\begin{caution}
-That filter replaces the current one. If you grouped a filtered view, clicking a group shows the whole
-group, not its part of the filtered view: add the earlier condition back in the filter box.
-\end{caution}
+\code{LITO is blank} for the blank group). If a filter was already on, the group's condition is added to
+it with \code{and}, so you see the group's part of what you grouped.
 
 \section{Limits}
 

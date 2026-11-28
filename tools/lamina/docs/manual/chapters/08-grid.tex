@@ -82,15 +82,8 @@ whole range, so a few extreme values don't flatten the rest into one colour.
 \end{description}
 
 Choosing any of these turns the scale on with that setting. The range is taken from the sample behind
-the column's distribution (\cref{ch:gutter}), or, with clipping, from percentiles of the column.
-
-\begin{caution}
-\ui{Clip outliers} currently takes its percentiles from the first 8{,}192 rows of the file rather than
-from a sample spread through it. On a file whose first rows are unlike the rest (a block model written
-from the top down starts with the waste above the orebody) the range comes out far too narrow and most
-cells take the top colour. The sample model opens this way. Turn clipping off, or use a log scale, until
-it is fixed.
-\end{caution}
+the column's distribution (\cref{sec:gutter-sample}), spread through the whole file: its minimum and
+maximum, or with clipping, its 5th and 95th percentiles.
 
 \section{Hiding columns}
 

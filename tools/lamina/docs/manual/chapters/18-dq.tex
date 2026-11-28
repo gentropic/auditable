@@ -19,12 +19,15 @@ missing-value code.}
 \toprule
 \sffamily\bfseries flag & \sffamily\bfseries level & \sffamily\bfseries the rule \\
 \midrule
+wrong number of fields & high & rows with more or fewer fields than the table has columns: a stray
+delimiter, a broken quote, a short line. Reported once, for \ui{(every column)}, with how many rows and
+the first of them \\
 all blank & high & every value in the sample is empty \\
 leading zeros lost & high & a number column has values written with a leading zero (\code{007},
 \code{012}): codes, read as numbers \\
 non-numeric values & warn & a number column has values that aren't numbers, with examples \\
-thousands separators & warn & meant for values like \code{1,234} in a number column; at present such
-values are reported under \ui{non-numeric values} instead, with \code{1,234} among the examples \\
+thousands separators & warn & values like \code{1,234} in a number column, which with a decimal point
+set read as text \\
 whitespace padding & warn & values with spaces before or after them, which break filters and joins
 (\code{"OXIDE "} isn't \code{"OXIDE"}) \\
 possible sentinel & warn & the column's minimum is $-9$, $-99$, $-999$, $-9999$ or $-99999$ and occurs at
@@ -49,8 +52,11 @@ exactly, filter it to everything a column can hold (\code{ID is filled}) first; 
 
 \section{Acting on a flag}\label{sec:dq-act}
 
-Click a flag's row for the column's statistics, which show the non-numeric values and the distribution
-(\cref{sec:one-column}); click the column's name to scroll the grid to it. \ui{copy all} copies the list.
+Each flag's \ui{first at} column names the first row the fault was seen in, with two links: \ui{go} to
+that row in the grid, and \ui{raw} to its bytes in the raw view (\cref{ch:raw}), where a stray delimiter
+or a broken quote can be seen as it is. Click a flag's row for the column's statistics, which show the
+non-numeric values and the distribution (\cref{sec:one-column}); click the column's name to scroll the
+grid to it. \ui{copy all} copies the list, and \ui{⧉ pin} keeps it as a tab (\cref{sec:pins}).
 
 \ui{leading zeros lost} carries \ui{fix: treat as text}: one click, and the column is read as text, its
 codes back as they were written (\cref{sec:text-number}). The others have no button, because the fix

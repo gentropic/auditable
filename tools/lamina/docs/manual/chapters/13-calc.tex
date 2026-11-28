@@ -16,8 +16,8 @@ Click \ui{ƒ+ col} on the toolbar, or choose \ui{Add calculated column…} on an
 The editor asks for two things:
 
 \begin{description}
-\item[\ui{Name}] a letter, then letters, digits, \code{\_} or \code{-}. It can't be the name of a
-column already in the table.
+\item[\ui{Name}] a letter, then letters, digits or \code{\_}. It can't be the name of a column already
+in the table. (No hyphen: in an expression a hyphen is a minus, \cref{sec:names}.)
 \item[\ui{Expr}] the expression. It is coloured and completed as the filter box is
 (\cref{sec:filter-box}).
 \end{description}
@@ -32,23 +32,14 @@ its value on the first six rows.}
 
 The new column appears at the right of the table, its header marked \ui{ƒ}.
 
-\begin{note}
-Avoid \code{-} in a name. It is allowed, but in an expression a hyphen is a minus, so a column called
-\col{cu-hi} has to be written \code{`cu-hi`} wherever it is used (\cref{sec:names}).
-\end{note}
-
 \subsection{The column's type}\label{sec:calc-type}
 
-lamina decides whether the new column holds numbers or text from its preview: a number column when every
-non-blank value in the first six rows is a number, a text column otherwise.
-
-\begin{caution}
-When the expression is blank on the file's first six rows, lamina has no numbers to go by and makes the
-column text, though it holds numbers further down. On the sample model, whose first rows are waste,
-\code{if(Cu\_pct >= 1, Cu\_pct, blank)} comes out as text. Filters still compare its values as numbers, but
-its distribution is a bar of top values, its statistics count values instead of averaging them, and
-grade–tonnage won't offer it as a grade. Right-click its header and choose \ui{Treat as number}.
-\end{caution}
+lamina decides whether the new column holds numbers or text by working it out on the sample spread
+through the file (\cref{sec:gutter-sample}): a number column when every non-blank result there is a
+number (or text that reads as one), a text column otherwise. Spread, so that an expression blank on the
+file's first rows (\code{if(Cu\_pct >= 1, Cu\_pct, blank)} on a model whose first rows are waste) is still
+seen to give numbers further down. If it decides wrong, the header's menu has \ui{Treat as number} and
+\ui{Treat as text}.
 
 \section{Using another calculated column}
 

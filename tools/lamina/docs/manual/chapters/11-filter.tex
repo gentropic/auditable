@@ -54,11 +54,16 @@ ZONE matches "(a+)+" & a refusal of the pattern, which could take forever on som
 \end{tabularx}
 \end{center}
 
-\begin{caution}
-For a value typed without quotes, the suggestion can mislead: \code{LITO = OXIDE} gives \code{unknown
-column: OXIDE — did you mean ID?}, because OXIDE is two letters from no column and three from \col{ID}.
-What it means is that \code{OXIDE} needs quotes.
-\end{caution}
+Three of lamina's messages answer the usual slips directly:
+
+\begin{itemize}
+\item A value typed without quotes: \code{LITO = OXIDE} gives \code{OXIDE is a value of LITO — quote it},
+when the value is one lamina has seen in the column.
+\item A name with a hyphen typed bare: \code{ok-indic > 2} says it reads as \col{ok} minus \col{indic},
+and how to write the name.
+\item A misspelt function: \code{flor(Au\_gpt)} gives \code{unknown function flor — did you mean
+floor?}.
+\end{itemize}
 
 \section{Filters from the grid}\label{sec:filter-from-grid}
 

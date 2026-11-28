@@ -58,19 +58,15 @@ splits on spaces, isn't taken for a table. A real delimiter on the same data win
 \subsection{The header}
 
 A header row is assumed when every field of the first row is text and some later row has a number in it.
-That is right for most exports, and wrong in two cases worth knowing:
+A table that is all text, such as a list of codes and descriptions, has no number to go by; in a file
+named \file{.csv}, \file{.tsv} or \file{.tab}, its first row is taken as the header when it is complete
+(no empty field), its names are all different, and none of them appears again in its column further down.
+Otherwise the names are read as the first data row and the columns are called \col{col 1}, \col{col 2},
+and so on: set \ui{Header} to \ui{yes} in the interpretation popover (\cref{sec:interpretation}).
 
-\begin{itemize}
-\item \textbf{A table that is all text}, such as a list of codes and descriptions. No row has a number,
-so the names are read as the first data row and the columns are called \col{col 1}, \col{col 2}, and so
-on.
-\item \textbf{Numbers written with a decimal comma}, when lamina hasn't been told about the comma
-(below). The numbers read as text, so again no row has one.
-\end{itemize}
-
-In both cases, set \ui{Header} to \ui{yes} in the interpretation popover (\cref{sec:interpretation}).
 A column with no name in the header is called \col{col} and its number. The number of columns is the
-length most rows have, so one stray row with an extra field doesn't add a column.
+length most rows have, so one stray row with an extra field doesn't add a column (data quality flags
+such rows, \cref{ch:dq}).
 
 \subsection{Quoting}
 
@@ -105,17 +101,15 @@ GRADE
 
 \subsection{The decimal comma}\label{sec:decimal-comma}
 
-In Brazil and much of Europe a number is written \code{45,2} and the column delimiter is then usually a
-semicolon. lamina doesn't guess the decimal comma: set \ui{Decimal} to \ui{comma (1,5)} in the
-popover. With it, \code{45,2} reads as 45.2 and \code{1.234,56} as 1234.56 (the point is taken as a
-thousands separator), filters and statistics treat those columns as numbers, and the header guess is
-made again with the numbers recognised.
+In Brazil and much of Europe a number is written \code{45,2}, and the column delimiter is then usually a
+semicolon. lamina recognises it: when the delimiter isn't a comma, and the first lines hold at least
+three numbers written with a comma (\code{45,2}, \code{1.234,56}) and over four times as many as are
+written with a point, it reads the file with a decimal comma. \code{45,2} then reads as 45.2 and
+\code{1.234,56} as 1234.56 (the point is taken as a thousands separator), and filters and statistics treat
+those columns as numbers.
 
-\begin{caution}
-Until the decimal comma is set, a semicolon file of comma-decimal numbers opens with every column as
-text and its header read as a data row. Nothing is wrong with the file; lamina hasn't been told how it
-writes numbers. One change in the popover fixes both.
-\end{caution}
+When the guess is wrong, or a file has too few such numbers near its top to tell, set \ui{Decimal} to
+\ui{point (1.5)} or \ui{comma (1,5)} in the popover.
 
 \subsection{Encodings}\label{sec:encodings}
 
@@ -135,15 +129,37 @@ jump to a line, filter it (\code{line contains "ERROR"}) and export what the fil
 report of any size is readable this way.
 
 A file that holds bytes text never does opens as a note in its tab, \ui{not a table}, with its size.
-\menu{View>Raw (hex)} shows its bytes (\cref{ch:raw}).
+\menu{View>Raw — the bytes in hex} shows its bytes (\cref{ch:raw}).
 
 \section{The interpretation popover}\label{sec:interpretation}
 
 Click the kind badge, or open \menu{Data>Interpretation (delimiter / header / skip)…}. The popover lists
-what lamina detected, under \ui{Detected}, and the settings that override it.
+what lamina detected, under \ui{Detected}, shows the file's first lines as lamina reads them, and gives
+the settings that override what it detected.
 
-\shot[0.62\linewidth]{interpretation}{The interpretation popover on the sample: what lamina detected
-(delimiter, columns, header, encoding), and the settings that override it.}
+\shot[0.7\linewidth]{interpretation}{The interpretation popover on a small CSV: what lamina detected, the
+first lines as they're read, and the settings.}
+
+\subsection{The first lines, as they're read}\label{sec:first-lines}
+
+The pane headed \ui{the first lines, as they're read} shows the start of the file's own text, line by
+line, marked with how lamina is reading it:
+
+\begin{itemize}
+\item each delimiter that splits fields is marked; one inside quotes, which doesn't, isn't;
+\item the preamble lines skipped, and comment lines, are struck through;
+\item the header line is labelled as the header;
+\item beside each record, its number of fields, in red where it differs from the table's;
+\item a quoted field that runs on to the next line is shown continuing, as one record;
+\item the line endings, and invisible characters (tabs, a byte-order mark, a no-break space), as visible
+marks, as in the raw view (\cref{sec:raw-lines}).
+\end{itemize}
+
+Change a setting and the pane follows: set the delimiter to semicolon and the marks move to the
+semicolons; set \ui{Skip rows} to 2 and the first two lines are struck. It is the quickest way to see why a
+file reads wrong, and to see that a change fixes it.
+
+\subsection{The settings}
 
 \begin{center}\small
 \begin{tabularx}{\linewidth}{@{}lML@{}}
@@ -153,7 +169,7 @@ what lamina detected, under \ui{Detected}, and the settings that override it.
 \ui{View as} & read the file as a table or as lines of text & auto · table · text \\
 \ui{Delimiter} & the column separator & auto · comma · semicolon · tab · pipe · whitespace \\
 \ui{Header} & whether the first row names the columns & auto · yes · no \\
-\ui{Decimal} & how numbers write their fraction & point (1.5) · comma (1,5) \\
+\ui{Decimal} & how numbers write their fraction & auto · point (1.5) · comma (1,5) \\
 \ui{Encoding} & how the bytes become characters & UTF-8 · Windows-1252 · Latin-1 · UTF-16 LE · UTF-16 BE \\
 \ui{Skip rows} & lines to skip before the header & a number \\
 \ui{Comment} & skip the leading lines that start with this & a character or word \\
@@ -161,24 +177,28 @@ what lamina detected, under \ui{Detected}, and the settings that override it.
 \end{tabularx}
 \end{center}
 
-Changing a setting reads the file again with it, at once. A setting left on \ui{auto} or blank keeps
-the detected value. For a Datamine or Parquet file the list shows what was found (its format, columns,
-and for Parquet its row groups and compression). Their columns and types come from the file itself, so
-there is nothing to override: the settings are still shown below the list, but changing them does
-nothing.
+Changing a setting reads the file again with it, in the same view, at once, and the \ui{Detected} list
+follows the new reading. A setting left on \ui{auto} or blank keeps the detected value.
+
+A Datamine file, a Parquet file or a workbook sheet carries its columns and types inside it, so there is
+nothing to choose: the popover lists what was found (format and columns; for Parquet, the row groups and
+compression), says \ui{a binary table — its columns and types are in the file, so there's nothing here to
+choose}, and the settings are greyed out.
 
 \begin{note}
 A forced interpretation isn't stored in the index cache: the next time you open the file, lamina detects
-it afresh. To keep a forced interpretation with a file, save a lens (\cref{ch:lens}); a lens records the
-settings you changed and applies them when it is opened.
+it afresh. A lens keeps it (\cref{ch:lens}), and so does the memory of a file's last views
+(\cref{sec:last-views}).
 \end{note}
 
 \section{When a file can't be shown}\label{sec:failures}
 
-lamina says why rather than showing an empty grid or garbage. The grid is replaced by a short note:
+lamina says why rather than showing an empty grid or garbage. The file's tab holds a short note instead
+of a table (a \term{note tab}, \cref{sec:note-tabs}):
 
 \begin{description}
-\item[\ui{binary file}] the bytes aren't text and no reader recognised them.
+\item[\ui{not a table}] the bytes aren't text and no reader recognised them; \menu{View>Raw — the bytes
+in hex} shows them (\cref{ch:raw}).
 \item[\ui{archive too large}] a Zstandard, xz, bzip2 or tar archive larger than 32~MB: these must be
 decompressed whole, in memory (\cref{sec:archives}).
 \item[\ui{workbook too large}] a workbook larger than 32~MB, for the same reason (\cref{sec:xlsx}).
@@ -190,7 +210,7 @@ often a compression it doesn't carry (\cref{sec:parquet}).
 \end{description}
 
 \begin{tryit}
-Make lamina misread a file, then correct it.
+Watch lamina read a file.
 \begin{enumerate}
 \item Save these four lines in a text editor as \file{assays.csv}:
 \begin{codeblock}
@@ -199,10 +219,11 @@ DH1;0,0;1,5;45,2
 DH1;1,5;3,0;51,7
 DH2;0,0;2,0;38,9
 \end{codeblock}
-\item Open it in lamina. It reads four rows and four columns called \col{col 1} to \col{col 4}: the
-semicolon was found, but the numbers read as text, so the header was taken for data.
-\item Click the kind badge and set \ui{Decimal} to \ui{comma (1,5)}. The table reads again: three rows,
-columns \col{HOLE}, \col{FROM}, \col{TO}, \col{FE}, and the three numeric columns are numbers (their
-headers carry a histogram now).
+\item Open it in lamina: three rows, columns \col{HOLE}, \col{FROM}, \col{TO}, \col{FE}, the last three
+numbers. The semicolon and the decimal comma were both found.
+\item Click the kind badge. The pane shows the four lines with the semicolons marked, the first labelled
+as the header, and four fields beside each.
+\item Set \ui{Delimiter} to \ui{comma}. The pane now marks the decimal commas as delimiters, the field
+counts go wrong, and the table behind it changes to match. Set it back to \ui{auto}.
 \end{enumerate}
 \end{tryit}

@@ -50,19 +50,12 @@ read one column without decoding the others. A filter on a \file{.dm} reads only
 expression names (\cref{sec:strided}); on a 17-column model filtering on one grade, that is most of the
 file left unread.
 
-\begin{caution}
-A single-precision \file{.dm} stores each number in four bytes, which hold about seven significant
-digits. lamina currently shows and exports those numbers with all the digits of their exact binary
-value, so a grade stored as 0.1 appears as \code{0.10000000149011612}. The value is right to the
-precision the file holds; the extra digits are noise. Set a number format to read them
-(\cref{sec:formats}), and expect the noise in a CSV exported from such a file until this is fixed.
-\end{caution}
+A single-precision \file{.dm} holds about seven significant digits per number. lamina shows and
+exports each one as the shortest decimal that is that number in single precision: a grade stored as 0.1
+reads \code{0.1}, not the \code{0.10000000149011612} its exact binary value would spell out.
 
-\begin{caution}
-A \file{.dm} inside an archive (\file{model.dm.gz}, or a zip holding a \file{.dm}) currently opens as a
-binary file: lamina's archive path doesn't yet recognise Datamine. Decompress it first and open the
-\file{.dm} itself.
-\end{caution}
+A \file{.dm} inside an archive (\file{model.dm.gz}, or a zip holding one) opens as a \file{.dm}, from
+memory, within the archive limits of \cref{sec:archives}.
 
 \section{Apache Parquet}\label{sec:parquet}
 
@@ -170,5 +163,4 @@ many times, decompress it once outside lamina and open the plain file.
 \end{why}
 
 Entries are recognised as their own formats once decompressed: a CSV inside a zip is a CSV, a Parquet
-inside one is a Parquet (read from memory). A Datamine file inside an archive isn't yet (the caution
-above).
+inside one is a Parquet (read from memory). So is a Datamine file or a workbook.

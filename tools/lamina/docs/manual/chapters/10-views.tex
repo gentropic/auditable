@@ -1,23 +1,119 @@
 \chapter{Views and panels}\label{ch:views}
 \begin{goals}
-\textbf{In this chapter} you will hold several files, and several views of one file, side by side in
-tabs and splits.
+\textbf{In this chapter} you hold several files at once, and several views of one file, in tabs and side
+by side; and you keep an instrument's result open beside the table it came from.
 \end{goals}
 
-\begin{pending}
-This chapter waits on documents, views and panels, which are being built (the workspace plan,
-\file{spec\_inbox/lamina-workspace-spec.md}, §§1–2 and 5). It will cover:
+\section{Files, views and tabs}\label{sec:views}
+
+Every file you open gets a tab. What the tab shows is a \term{view}: one way of looking at the file, with
+its own filter, sort, calculated columns, formats, colour scales and hidden columns. A file can have
+several views, each in its own tab. They share the file's index and its caches, so a second view of a
+5~GB file costs a grid, not another pass through the file. They share nothing else: a filter in one view
+doesn't touch another.
+
+\shot{views}{Two views of the sample side by side: sulphide on the left, everything but sulphide on the
+right, each with its own filter, sort and status line.}
+
+\section{Opening into tabs}\label{sec:open-tabs}
+
+\menu{File>Open…}, a drop, and a recent file each add a tab.
+Drop several files at once and each gets its own. A tab's title is the file's name; a second view of the
+same file is \file{model.csv (2)}, a sheet of a workbook \file{assays.xlsx › AU}, an archive's entry
+\file{survey.zip › collars.csv}.
+
+Some things change the view you are in instead of adding one: reading the file again with different
+settings (\cref{sec:interpretation}), and applying a lens to the open file (\cref{ch:lens}).
+
+\subsection{Workbooks}\label{sec:workbook-tabs}
+
+A workbook opens a tab for every sheet with data in it. The first is read at once; each of the others is
+read the first time you look at its tab, so a workbook of twenty sheets opens as fast as one of one.
+
+\subsection{Tabs that aren't tables}\label{sec:note-tabs}
+
+A file lamina can't show as a table still gets a tab, holding a note saying why (\cref{sec:failures}): a
+\term{note tab}. A binary file's note points at its bytes, in hex (\cref{ch:raw}).
+
+\section{Arranging them}\label{sec:arranging}
+
+Tabs sit in a strip above their panel. Drag a tab:
+
 \begin{itemize}
-\item \textbf{Documents and views}: a document is a file, its index and its caches; a view is a filter,
-a sort, calculated columns and formats over it. A file can have several views, which share its index.
-\item \textbf{Tabs and splits}: arranging panels; dragging a tab into a split; floating one.
-\item \textbf{Several files}: opening and dropping more than one; each file a tab.
-\item \textbf{Workbooks and archives}: every sheet a tab; archive members opened on demand from a list.
-\item \textbf{New view of this file}: the same file twice, with two filters (ore beside waste).
-\item \textbf{The focused panel}: the menus and tools act on it; the status line follows it; the columns
-panel and the record inspector as panels of their own.
-\item \textbf{Panels don't talk to each other}: no shared filter, no instrument over two views.
-\item \textbf{Memory}: a file not on screen gives up its caches and keeps its index.
-\item \textbf{Narrow screens and the Android shell}: tabs only.
+\item along a strip, to reorder it;
+\item onto another strip, to move it there;
+\item onto the edge of a panel, to split the panel and put the tab beside it (left, right, above or
+below), and onto the edge of the window, for a row or column across the whole window;
+\item onto the bar between two panels, to put it between them.
 \end{itemize}
-\end{pending}
+
+Drag a bar between panels to resize them. \ui{×} on a tab closes it; closing a file's last view closes
+the file.
+
+\subsection{The focused view}\label{sec:focus}
+
+One view is \term{focused}: the one you last clicked in. With more than one on screen, it carries a mark.
+The toolbar, the menus and the footer speak for it: the filter box holds its filter, \ui{Σ stats} and the
+\menu{Tools} work on it, the kind badge and the status line describe it. Click into another panel and the
+toolbar changes to that view's.
+
+The columns panel and the record inspector follow the focused view too.
+
+\section{More views of one file}\label{sec:new-view}
+
+\begin{description}
+\item[\menu{View>New view of this file}] opens a second view of the focused file, starting as a copy of
+it (filter, sort, calculated columns, formats). From then on the two go their own ways.
+\item[\menu{View>New view of the rows this filter leaves out}] opens a view of the same file filtered to
+the complement of the focused view's filter, \code{not (…)}, and puts it in a split beside the first.
+Sulphide on the left, everything else on the right; ore beside waste. Since \code{not} takes the blanks
+(\cref{sec:blanks}), the two views together hold every row exactly once.
+\end{description}
+
+\section{Pinned results}\label{sec:pins}
+
+The instrument windows (statistics, the column summary, group by, grade–tonnage, grid summary, data
+quality) close when you go back to the table. To keep one, click \ui{⧉ pin} in its title bar. The result
+becomes a tab of its own, in a group under the table it came from, labelled with what it is, the view,
+its filter and the time:
+
+\begin{codeblock}
+Group by of sample_blockmodel.csv · filter LITO = "SULPHIDE" · 14:31
+\end{codeblock}
+
+A pinned result is a snapshot: it doesn't change when the view does. When the view's filter, sort or
+calculated columns have changed since, it says so (\ui{— the view has changed since}); \ui{run again}
+runs the instrument on the view as it is now, and the new result replaces the old in place. If the table
+is closed, the result says that too, and keeps what it showed.
+
+\shot{pin}{A group-by result pinned under its table: what it is, of which view, under which filter, and
+when.}
+
+\begin{tip}
+Pin the same instrument on two views to compare them: grade–tonnage of this month's model and last
+month's, or of ore and of its complement, side by side.
+\end{tip}
+
+\section{What views don't do}
+
+Views don't talk to each other. No filter is shared, and no instrument reads two views at once. Each
+answers for one file and one filter, which is what makes each answer clear.
+
+\section{On a narrow screen}
+
+On a phone, or a window narrower than 720 pixels (the lead-acid shell's, say), there are tabs but no
+splits: dragging a tab can reorder it, not put it beside another. A view that would open in a split (the
+complement, a raw view, a pinned result) opens as a tab.
+
+\begin{tryit}
+Ore beside waste, and a result beside each.
+\begin{enumerate}
+\item Open the sample and filter \code{LITO = "SULPHIDE"}.
+\item \menu{View>New view of the rows this filter leaves out}. A second view opens beside the first,
+filtered \code{not (LITO = "SULPHIDE")}.
+\item Click into the left view and open \menu{Tools>Grade–tonnage…}, \ui{Report}, then \ui{⧉ pin}.
+Do the same in the right view.
+\item In the left view, change the filter to \code{LITO = "TRANSITION"}. Its pinned result says the view
+has changed; \ui{run again} brings it up to date.
+\end{enumerate}
+\end{tryit}

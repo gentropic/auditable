@@ -188,6 +188,10 @@
 \NewDocumentCommand\term{o m}{\emph{#2}\IfValueTF{#1}{\index{#1}}{\index{#2}}}
 \newcommand\new[1]{\textcolor{amber}{\sffamily\bfseries\scriptsize\MakeUppercase{#1}}}
 
+% a control character as lamina draws it (U+2400 "control pictures" are in none of the book's faces): its
+% name, small, raised a little, in the muted colour — as the app's raw view shows CR LF
+\DeclareRobustCommand\ctl[1]{{\fontsize{5.5}{6}\selectfont\sffamily\color{muted}\raisebox{0.15ex}{#1}}}
+
 % margin notes: keys and pointers in the outer column
 \newcommand\side[1]{\marginnote{\raggedright\footnotesize\sffamily\color{muted}#1}}
 \newcommand\sidekey[2]{\marginnote{\raggedright\footnotesize\sffamily\color{muted}\key{#1}\par\smallskip #2}}

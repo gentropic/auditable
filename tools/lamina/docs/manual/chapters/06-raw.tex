@@ -1,23 +1,107 @@
 \chapter{The raw view}\label{ch:raw}
 \begin{goals}
-\textbf{In this chapter} you will look at any file's bytes as they are, as lines or as hex, and move
-between a row in the grid and the bytes it was read from.
+\textbf{In this chapter} you look at any file's bytes as they are, as lines or as hex, and move between a
+row in the table and the bytes it was read from. It is the answer to ``why is this being read wrong?''.
 \end{goals}
 
-\begin{pending}
-This chapter waits on the raw view, which is being built (the workspace plan,
-\file{spec\_inbox/lamina-workspace-spec.md}, §3). It will cover:
-\begin{itemize}
-\item \textbf{Lines}: line numbers and byte offsets; CR, LF, CRLF, tabs, the BOM and control characters
-made visible; bytes that don't decode in the chosen encoding marked; no wrapping, horizontal scroll.
-\item \textbf{Hex}: sixteen bytes a row, offset · hex · text, for any file, binary ones included.
-\item \textbf{Search}: the find bar in both; in lines, the filter as grep, and export of what it keeps.
-\item \textbf{The jumps}: from a grid row to its bytes (\ui{Show raw}), from a line back to its row,
-between lines and hex at the same offset.
-\item \textbf{Compressed and in-memory sources}: offsets in decompressed space; a workbook sheet's
-container bytes.
-\item \textbf{The interpretation dialog's raw pane}: setting the delimiter, header and skipped lines
-while looking at the real first lines.
-\item \textbf{Data quality into raw}: from a flag to the bytes it is about.
-\end{itemize}
-\end{pending}
+The table is lamina's reading of a file. Most of the time the reading is right; when it isn't (a column
+too many, a header taken for data, an accent that came out as \code{�}), the question is what the file
+actually holds. The raw view shows that: the bytes, with nothing interpreted except how they become
+characters.
+
+Open it from \menu{View>Raw — the lines as they are} or \menu{View>Raw — the bytes in hex}. It opens in a
+split beside the table (as a tab, on a narrow screen), titled \file{model.csv · raw} or
+\file{model.csv · hex}, and is windowed like the table: the raw view of a 50~GB file costs what its table
+costs.
+
+\shot{raw}{A CSV beside its raw lines: the byte offset of each line, the text with its line ending shown,
+and a quoted field that carries a line break into the next line.}
+
+\section{Lines}\label{sec:raw-lines}
+
+The lines view has two columns: \col{offset}, where the line starts in the file, in bytes, and
+\col{line}, the line's text with the invisible made visible:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries shown as & \sffamily\bfseries is \\
+\midrule
+\code{\ctl{LF}} at the end & the line ends with a line feed (Unix, and most exports) \\
+\code{\ctl{CR\,LF}} at the end & carriage return and line feed (Windows) \\
+nothing at the end & the last line, with no ending \\
+\code{⇥} & a tab \\
+\code{\ctl{NUL}} \code{\ctl{SOH}} … & other control characters, each as its own sign \\
+\code{⟨BOM⟩} & a byte-order mark \\
+\code{⍽} & a no-break space, the classic invisible CSV fault \\
+\code{·} & a trailing space (\code{OXIDE·} is \code{"OXIDE "}, which isn't \code{"OXIDE"}) \\
+\code{�} & bytes that aren't valid in the chosen encoding \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A line longer than lamina reads at once (8~MB) is cut, and ends \code{… (the line goes on — see hex)}.
+
+The lines are the file's lines, not its records: a quoted field with a line break in it, which the table
+reads as one record, is two lines here. That is often exactly what you are looking for.
+
+\subsection{The encoding}\label{sec:raw-encoding}
+
+The lines are decoded with the file's encoding. Open the interpretation popover on the raw view and change
+\ui{Encoding}, and the lines are decoded again: \code{ma�ica} in UTF-8 becomes \code{maçica} in
+Windows-1252. That shows which encoding the file was written in before you change the table's.
+
+\subsection{Searching and filtering}
+
+Find (\key{Ctrl}+\key{F}) works in the raw view as in the table. The filter works too, on the column
+\col{line}: \code{line contains "ERROR"}, \code{line matches "\textasciicircum{}DH0[0-9]+;"}. On raw lines
+a filter is \texttt{grep}: it keeps the matching lines, with their offsets, and \menu{Data>Export…} writes
+them out.
+
+\section{Hex}\label{sec:raw-hex}
+
+The hex view shows 16 bytes a row: the \col{offset} (in hexadecimal), the bytes in hexadecimal, and the
+bytes as text, a dot for each that isn't printable. It needs no index (row $n$ is the 16 bytes at offset
+$16n$), so it opens at once on any file, of any size, binary or not. A binary file's note tab
+(\cref{sec:note-tabs}) opens it.
+
+\section{Between a row and its bytes}\label{sec:raw-jumps}
+
+\begin{description}
+\item[\ui{Show raw}] on a cell's menu in the table opens the raw view (or brings it forward) at the bytes
+of that row's record, with the line selected. A record that spans several lines, by a quoted line break,
+is found where it starts.
+\item[\ui{Show as a row}] on a raw line's menu goes the other way: to the table's row that line belongs
+to, selected. For a header or a skipped preamble line it says
+\code{that line is the header (or a preamble line lamina skips)}; for a row the filter leaves out,
+\code{that line is row 1,204, filtered out of this view}.
+\item[Lines and hex] \menu{View>Raw — the bytes in hex} on a lines view switches it to hex at the same
+bytes, and \menu{View>Raw — the lines as they are} on a hex view back.
+\end{description}
+
+Data quality's flags lead here too: a flag's \ui{first at} column gives the first row it was seen in,
+with \ui{go} to that row and \ui{raw} to its bytes (\cref{ch:dq}).
+
+\section{Sources without bytes of their own}
+
+A file inside a compressed archive is shown decompressed, with offsets counted in the decompressed bytes.
+A file that isn't text (a Datamine or Parquet file, a workbook) opens its raw view as hex. A view whose
+rows don't come from a file's bytes, such as a pinned result, says \code{this view has no bytes of its
+own to show}.
+
+\begin{tryit}
+Find the row that breaks a file.
+\begin{enumerate}
+\item Save these lines as \file{ragged.csv}:
+\begin{codeblock}
+A,B,C
+1,2,3
+4,5
+6,7,8
+9,10,11,12
+\end{codeblock}
+\item Open it and open \menu{Tools>Data quality…}: \ui{wrong number of fields}, first at row 2.
+\item Click \ui{raw}. The raw view opens beside the table at \code{4,5\ctl{LF}}: one field short.
+\item On that line's menu choose \ui{Show as a row}: back in the table, on row 2.
+\end{enumerate}
+\end{tryit}

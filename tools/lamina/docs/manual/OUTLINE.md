@@ -2,7 +2,7 @@
 
 Target 120–150 pages, reference-grade, organised by how someone meets a file: open it, see what it is,
 read it, ask it questions, measure it, keep and share what they did. Labels: `ch:…`, `sec:…`, `app:…`.
-Status per chapter: **written** (probed against the pinned build), **stub** (waits on the code track:
+Status per chapter (all written as of the second pinned build, 0.1.0 · b87b3aa; 137 pages): **written** (probed against the pinned build), **stub** (waits on the code track:
 `spec_inbox/lamina-workspace-spec.md`), **rewrite** (written against today's lamina, will change).
 
 ## Front matter
@@ -27,7 +27,7 @@ the pending-chapters note).
 5. **Formats in detail** (`ch:formats`) — written. Excel workbooks; Datamine `.dm`; Apache Parquet
    (types from the footer, INT64 beyond 2^53, codecs refused, nested columns, row groups); archives (zip,
    tar, gz, zst, bz2, xz; the picker; what streams and what must fit in memory).
-6. **The raw view** (`ch:raw`) — STUB. Lines and hex, the jumps between a row and its bytes, search,
+6. **The raw view** (`ch:raw`) — written (b87b3aa). Lines and hex, the jumps between a row and its bytes, search,
    compressed and resident sources, the live raw pane in the interpretation dialog.
 7. **How a huge file scrolls** (`ch:huge`) — written. The block index; the scan (worker or inline); the
    index cache; windowed reads; the record cursor; result views; stream sources and the tape; strided
@@ -39,7 +39,7 @@ the pending-chapters note).
    pinning, the record inspector, find, the selection statistics, scroll lock.
 9. **Column distributions** (`ch:gutter`) — written. The glyphs (histogram, top values, null bar, ≈, log),
    the filtered overlay, hover / click / drag / double-click, brush modes.
-10. **Views and panels** (`ch:views`) — STUB. Documents and views; tabs and splits; several files;
+10. **Views and panels** (`ch:views`) — written (b87b3aa), with pinned results. Documents and views; tabs and splits; several files;
     workbook sheets and archive members as tabs; a second view of the same file; the focused panel;
     narrow screens and the shell.
 
@@ -67,7 +67,7 @@ the pending-chapters note).
 18. **Data quality** (`ch:dq`) — written. Every check, its rule, its severity, the sample, the fix.
 
 ## Part VI — Keeping and sharing
-19. **Lenses** (`ch:lens`) — REWRITE when lens v2 lands. v1: what is kept and what isn't, by-name matching,
+19. **Lenses** (`ch:lens`) — rewritten for lens v2 (b87b3aa): sources · views · layout, the slot dialog, last views, the session; v1 what is kept and what isn't, by-name matching,
     skipped-and-reported, applying, opening a `.lamina`. v2 (stub): sources, views, layout, the slot
     dialog, recents restoring views, the session.
 20. **Export** (`ch:export`) — written. The dialog, delimiters, header, rows, columns, streaming, `.dm`
@@ -78,7 +78,7 @@ the pending-chapters note).
 
 ## Appendices
 A. **window.lamina** (`app:host`) — written. Every call, its arguments and results, events; v1 is one
-   table (multi-view: when views land).
+   table; views() · focus() · open newView · lens({file|all}) (b87b3aa).
 B. **Keys and mouse** (`app:keys`) — written.
 C. **Expression functions** (`app:functions`) — written. Every function, alphabetical, one line each.
 D. **Limits** (`app:limits`) — written. Every number lamina caps at, and what happens there.

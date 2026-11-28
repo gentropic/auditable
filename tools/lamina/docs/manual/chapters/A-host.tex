@@ -22,27 +22,27 @@ iframe.addEventListener('lamina:ready', () => {
 \item \textbf{Plain data out}: numbers, text, arrays and objects, never a live object from inside lamina.
 \item \textbf{Columns by name}, without regard to case, as in expressions.
 \item \textbf{Actions return promises}, which reject with the reason; reading a value is synchronous.
-\item \textbf{One table at a time}: every call acts on the open table.
+\item \textbf{The focused view}: every call acts on the focused view (\cref{sec:focus}); \code{views()}
+and \code{focus()} choose another.
 \end{itemize}
 
 \code{window.\_lamina} also exists. It is lamina's test surface, reaching into internals that can change
 at any commit. Build on \code{window.lamina}.
 
-\begin{pending}[title={\faHourglassHalf\enskip Several views}]
-With views and panels (\cref{ch:views}), version 1 is being extended additively: \code{open()} returns a
-view id, calls take an optional \code{view}, \code{views()} lists them, and lenses are the version with
-several views (\cref{ch:lens}). The calls below keep working against the focused view.
-\end{pending}
-
 \section{Calls}
 
 \begin{description}[style=nextline]
-\item[\code{open(file, \{ name \})}] Opens a \code{File}, \code{Blob}, \code{FileSystemFileHandle} or bytes,
-as a dropped file is opened. Resolves to \code{info()}. Rejects when the file isn't a table, or holds
-several (an archive) and lamina is showing its picker.
-\item[\code{info()}] \code{null}, or \code{\{ name, format, bytes, rows, totalRows, columns, filter,
-sort \}}. \code{rows} counts the current view; \code{format} is \code{csv}, \code{tsv}, \code{dm},
-\code{parquet}, \code{xlsx} or \code{text}.
+\item[\code{open(file, \{ name, newView \})}] Opens a \code{File}, \code{Blob}, \code{FileSystemFileHandle}
+or bytes, as a dropped file is opened. By default it replaces the focused view; with \code{newView: true}
+it opens in a new tab. Resolves to \code{info()}. Rejects when the file isn't a table (it still gets a
+note tab), or holds several (an archive) and lamina is showing its picker.
+\item[\code{views()}] \code{[\{ id, name, kind, focused \}]}, one per tab; \code{kind} is \code{table}, or
+\code{note} for a note tab or a pinned result.
+\item[\code{focus(id)}] makes that view the focused one.
+\item[\code{info()}] \code{null}, or \code{\{ view, name, format, bytes, rows, totalRows, columns,
+filter, sort \}} for the focused view. \code{rows} counts the view; \code{format} is \code{csv},
+\code{tsv}, \code{dm}, \code{parquet}, \code{xlsx}, \code{text}, or \code{raw} for a raw view, whose
+columns are \code{offset, line} or \code{offset, hex, text}.
 \item[\code{columns()}] \code{[\{ name, type, hidden, format, width, calc?, expr? \}]}, in the file's
 order; \code{type} is \code{number} or \code{string}.
 \item[\code{setColumn(name, \{ hidden, type, format \})}] hide or show, read as number or text, number
@@ -63,8 +63,10 @@ their statistics. A bad expression rejects with the message the filter box would
 and columns, or the row holding a file record (rejected when the filter leaves it out).
 \item[\code{selection()}] \code{\{ from, to, columns, record \}}, or \code{null}.
 \item[\code{addCalc(name, expr)}, \code{removeCalc(name)}] calculated columns.
-\item[\code{lens()}, \code{applyLens(lens)}] the view as a lens object; \code{applyLens} resolves to
-\code{\{ skipped \}}.
+\item[\code{lens(\{ file | all \})}, \code{applyLens(lens)}] a lens object (\cref{ch:lens}): with no
+argument, the focused view as a version-1 lens; with \code{\{ file: true \}}, the focused file's views as
+a version-2 lens; with \code{\{ all: true \}}, every open file and the layout. \code{applyLens} takes
+either version, with or without a table open, and resolves to \code{\{ skipped \}}.
 \item[\code{stats(column)}] count, blanks, minimum, maximum, mean, standard deviation, quantiles and
 histogram (or a text column's top values), over the filtered rows when a filter is on.
 \item[\code{groupBy(\{ by, values, weight \})}] \code{\{ by, groups: [\{ key, count, values: \{ column:

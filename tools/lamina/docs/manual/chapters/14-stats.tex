@@ -96,16 +96,11 @@ without opening the summary, so that later statistics are instant.
 \subsection{What is approximate}
 
 Everything in the summary is exact except the median. Keeping every value of every column would cost
-too much memory, so the summary's \ui{p50} is read off the column's histogram, interpolating inside the
-bar that holds the middle value, and is marked \ui{≈}. A column's statistics opened from the cache show
-the same \ui{≈} quantiles, with \ui{compute exact} to scan that column properly.
-
-\begin{caution}
-On a skewed grade the \ui{≈} median can be far off. The histogram has 40 equal bars between the
-minimum and the maximum, and when most values sit in the first bar, the interpolation inside it says
-little: on the sample, \col{Cu\_pct}'s summary median is 0.134 where the exact median is 0.042. Treat
-\ui{p50 ≈} as a rough figure, and open the column's statistics (\ui{compute exact}) before quoting it.
-\end{caution}
+too much memory, so the summary's \ui{p50} is read off a fine histogram of the column, 4{,}096 bars
+between its minimum and maximum, interpolating inside the bar that holds the middle value, and is marked
+\ui{≈}. It is close: on the sample, \col{Cu\_pct}'s summary median is 0.0423 where the exact one is
+0.042. A column's statistics opened from the cache show the same \ui{≈} quantiles, with \ui{compute
+exact} to scan that column properly; quote the exact figure.
 
 \section{The selection}\label{sec:selection-stats}
 

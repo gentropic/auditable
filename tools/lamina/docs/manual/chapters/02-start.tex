@@ -106,6 +106,10 @@ allow lamina to read it again, and the file opens. Where it doesn't (a file you 
 browser), the entry carries a \ui{↻} and choosing it asks you to pick the file again: lamina never reads
 a file you haven't just given it.
 
+A file reopened this way, or any other way, comes back with the views you last had of it: the filter,
+the sort, the calculated columns, the formats (\cref{sec:last-views}). And when lamina starts with nothing
+open, the empty screen offers to reopen the files you had open last time.
+
 \menu{File>Clear recents} empties the list. \menu{File>Remember recent files} turns the list off
 altogether, and clears it. On a shared computer, leave it off.
 

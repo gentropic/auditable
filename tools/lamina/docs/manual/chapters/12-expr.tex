@@ -45,8 +45,8 @@ an older form lamina's lenses may still hold.
 
 \begin{caution}
 A hyphen between two words is always a minus: \code{OK-Indic} is the column \col{OK} minus the column
-\col{Indic}. When a column really is called \col{OK-Indic}, lamina's error says so and suggests the
-backticked form.
+\col{Indic}. When a column really is called \col{OK-Indic}, lamina's error says so and shows how to
+write the name.
 \end{caution}
 
 \subsection{Values}
@@ -292,9 +292,7 @@ Blanks, on purpose.
 \item Filter \code{cu\_hi is blank}. These are the blocks under 1\%: most of the model.
 \item Change the filter to \code{not (cu\_hi > 2)}. The blocks between 1 and 2\% and every blank: the
 complement of \code{cu\_hi > 2}.
-\item Clear the filter. Right-click the \col{cu\_hi} header: if it offers \ui{Treat as number}, choose it
-(lamina guessed the new column's type from rows that were all blank, \cref{sec:calc-type}). Then choose
-\ui{Statistics — cu\_hi…}: the blanks are counted as blanks, and the mean is the mean of the blocks at or
-above 1\% only.
+\item Clear the filter, right-click the \col{cu\_hi} header and choose \ui{Statistics — cu\_hi…}: the
+blanks are counted as blanks, and the mean is the mean of the blocks at or above 1\% only.
 \end{enumerate}
 \end{tryit}

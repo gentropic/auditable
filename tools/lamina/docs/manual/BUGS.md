@@ -5,7 +5,23 @@ code track fixes them. Repro files: `work/make-fixtures.mjs` writes them to `wor
 `work/probes/` drive the page (`node work/probe.mjs <probe>`). The book describes what lamina does today
 and, where it is a bug, how to get round it; when a fix lands, the sentence marked in the chapter changes.
 
-## Bugs
+## Status at the second pinned build `0.1.0 · b87b3aa`
+
+FIXED (the code track; the book's caution boxes are gone and the chapters describe the fixed behaviour):
+#1, #2, #3, #4, #5, #6, #7, #8, #9, #10, #11, #12, #13, #14, #15, #16. Everything below that line is history.
+
+New, found writing the views / raw / lens chapters on b87b3aa:
+
+17. **Group by's first Value is the ID column.** `openGroupBy` seeds `values: [firstNum]` — on a block
+    model that is `ID` (sum 2.4296e+9, mean 74934…), which is never what anyone groups. Grade–tonnage
+    already skips id/x/y/z/dx/dy/dz for its default grade; group by should use the same rule. Seen in the
+    `pin` scene (it now sets the value explicitly).
+
+18. **A pinned result's caption reads "Group by of sample_blockmodel.csv".** `${pr.name} of ${src.label}`
+    — fine for "Statistics of …", "Grade–tonnage of …", awkward for "Group by of …". Cosmetic; the book
+    quotes it as it is.
+
+## Bugs (as found on b31bbe3)
 
 1. **A `.dm` inside an archive opens as "binary file".** `model.dm.gz` and a zip holding `model.dm`
    both show the binary note. `openInner` (archive entries, decompressed resident bytes) checks Parquet
