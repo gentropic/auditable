@@ -3127,7 +3127,7 @@ function pinResult(replace = null) {
   const src = pr.src, title = $('#helpTitle').textContent;
   const sig = viewSig(src), filter = (src === current ? $('#filter').value : src.filterText || '').trim();
   const at = new Date().toTimeString().slice(0, 5);
-  const v = { label: `${pr.name} · ${src.label}`, note: { badge: 'result', title, msg: '', meta: `${pr.name} of ${src.label}${filter ? ` · filter ${filter}` : ''} · ${at}`, result: { src: src.tabId, sig, run: pr.run, name: pr.name } } };
+  const v = { label: `${pr.name} · ${src.label}`, note: { badge: 'result', title, msg: '', meta: `${pr.name} · ${src.label}${filter ? ` · filter ${filter}` : ''} · ${at}`, result: { src: src.tabId, sig, run: pr.run, name: pr.name } } };
   const body = snapshotOverlay();
   $('#help').classList.remove('show');
   // results gather in one tab group under their table (on a phone: beside it, as tabs)
@@ -3807,7 +3807,10 @@ let _gbConfig = null, _gbResult = null, _gbSort = { col: 'n', dir: -1 };
 function openGroupBy() {
   const c = current; if (!c || c.d.kind !== 'delimited') return;
   pinnable('Group by', c, () => openGroupBy());
-  const firstCat = c.schema.findIndex((s) => s.type !== 'number'), firstNum = c.schema.findIndex((s) => s.type === 'number');
+  const firstCat = c.schema.findIndex((s) => s.type !== 'number');
+  // the value: the first number that isn't an identifier, a coordinate or a block size (grade–tonnage's rule)
+  const notId = (s) => s.type === 'number' && !/^(id|x|y|z|dx|dy|dz|xc|yc|zc|east|north|elev|rl|row|ijk|i|j|k)$/i.test(s.name);
+  let firstNum = c.schema.findIndex(notId); if (firstNum < 0) firstNum = c.schema.findIndex((s) => s.type === 'number');
   _gbConfig = { group: firstCat >= 0 ? firstCat : 0, values: [firstNum >= 0 ? firstNum : 0], weight: null };
   _gbResult = null;
   $('#helpTitle').textContent = `Group by — ${c.label}${c.filterResult ? ' (filtered)' : ''}`;

@@ -12,12 +12,12 @@ FIXED (the code track; the book's caution boxes are gone and the chapters descri
 
 New, found writing the views / raw / lens chapters on b87b3aa:
 
-17. **Group by's first Value is the ID column.** `openGroupBy` seeds `values: [firstNum]` — on a block
+17. *(FIXED after b87b3aa — the first Value skips identifiers, coordinates and block sizes, as grade–tonnage does)* **Group by's first Value is the ID column.** `openGroupBy` seeds `values: [firstNum]` — on a block
     model that is `ID` (sum 2.4296e+9, mean 74934…), which is never what anyone groups. Grade–tonnage
     already skips id/x/y/z/dx/dy/dz for its default grade; group by should use the same rule. Seen in the
     `pin` scene (it now sets the value explicitly).
 
-18. **A pinned result's caption reads "Group by of sample_blockmodel.csv".** `${pr.name} of ${src.label}`
+18. *(FIXED after b87b3aa — the caption reads "Group by · sample_blockmodel.csv")* **A pinned result's caption reads "Group by of sample_blockmodel.csv".** `${pr.name} of ${src.label}`
     — fine for "Statistics of …", "Grade–tonnage of …", awkward for "Group by of …". Cosmetic; the book
     quotes it as it is.
 
