@@ -1,0 +1,125 @@
+// lamina views smoke — several files open at once, in @gcu/rails tabs and splits (tools/lamina/js/app.js
+// installView / setFocus; spec_inbox/lamina-workspace-spec.md). Runs the dev tree AND the built
+// lamina.html (build first: node build.js --target=lamina).   node test/lamina-views-smoke.mjs
+//
+// What it holds: a file the user opens gets its own tab; a re-read replaces in place; each view keeps
+// its own filter, and focus follows a click into a split; closing falls back to a live view and the
+// last close shows the empty state; a failed open is a note tab; "New view of this file" copies the
+// view and then the two go their own ways; a drop of several files opens each.
+import { chromium } from 'playwright';
+import http from 'http';
+import { readFile } from 'fs/promises';
+import { extname, join, dirname } from 'path';
+import { fileURLToPath } from 'url';
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
+const MIME = { '.html': 'text/html', '.js': 'text/javascript', '.mjs': 'text/javascript', '.css': 'text/css', '.json': 'application/json' };
+const server = http.createServer(async (req, res) => {
+  try { const p = decodeURIComponent(new URL(req.url, 'http://x').pathname); const d = await readFile(join(ROOT, p)); res.writeHead(200, { 'content-type': MIME[extname(p)] || 'application/octet-stream' }); res.end(d); }
+  catch { res.writeHead(404); res.end(); }
+});
+await new Promise((r) => server.listen(0, '127.0.0.1', r));
+const port = server.address().port;
+
+let failed = 0, passed = 0;
+const ok = (m) => { passed++; console.log('ok   ' + m); };
+const fail = (m) => { failed++; console.log('FAIL ' + m); };
+const check = (cond, msg, detail) => (cond ? ok(msg) : fail(msg + (detail !== undefined ? ' — ' + JSON.stringify(detail) : '')));
+
+const browser = await chromium.launch();
+for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamina.html']]) {
+  const page = await (await browser.newContext({ viewport: { width: 1300, height: 800 } })).newPage();
+  const errors = [];
+  page.on('pageerror', (e) => errors.push(e.message));
+  page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text()); });
+  await page.goto(`http://127.0.0.1:${port}${url}`);
+  await page.waitForFunction(() => window._lamina && window._lamina.rails, null, { timeout: 20000 });
+  const E = (fn, arg) => page.evaluate(fn, arg);
+  const settle = (ms = 400) => page.waitForTimeout(ms);
+  const state = () => E(() => {
+    const l = window._lamina;
+    return {
+      n: l.views.length, focused: l.focused && l.focused.label, current: l.current && l.current.label,
+      name: document.getElementById('fileName').textContent, meta: document.getElementById('meta').textContent,
+      filter: document.getElementById('filter').value, tabs: [...document.querySelectorAll('.rails-tab')].map((t) => t.textContent.replace('×', '').trim()),
+    };
+  });
+  const csv = (name, n) => E(async ([nm, k]) => {
+    const body = 'a,b,c\n' + Array.from({ length: k }, (_, i) => `${i},${i * 2},x${i % 3}`).join('\n');
+    await window._lamina.openInTab(new File([body], nm));
+  }, [name, n]);
+
+  // 1 ── two files, two tabs; the second is focused
+  await csv('one.csv', 300); await settle();
+  await csv('two.csv', 500); await settle();
+  let s = await state();
+  check(s.n === 2 && s.tabs.join('|') === 'one.csv|two.csv' && s.focused === 'two.csv' && s.name === 'two.csv' && /500 rows/.test(s.meta),
+    `[${tag}] two files open in two tabs, the second focused`, s);
+
+  // 2 ── a re-read (the interpretation changed) replaces the focused view in place: same tab, still two
+  await E(() => window._lamina.reopen({ delimiter: ',' })); await settle(600);
+  s = await state();
+  check(s.n === 2 && s.tabs.join('|') === 'one.csv|two.csv' && s.focused === 'two.csv', `[${tag}] reading a file again keeps its tab`, s);
+
+  // 3 ── each view keeps its own filter
+  await E(async () => { document.getElementById('filter').value = 'a > 400'; await window._lamina.applyFilter('a > 400'); }); await settle();
+  await E(() => { const l = window._lamina; l.rails.activateTab(l.views[0].tabId); }); await settle();
+  const first = await state();
+  await E(() => { const l = window._lamina; l.rails.activateTab(l.views[1].tabId); }); await settle();
+  const second = await state();
+  check(first.focused === 'one.csv' && first.filter === '' && /^300 rows/.test(first.meta) && second.filter === 'a > 400' && /99 of 500/.test(second.meta),
+    `[${tag}] each view keeps its own filter (one.csv: none · two.csv: "a > 400", 99 of 500)`, { first, second });
+
+  // 4 ── a split: the second beside the first; a click into the left one focuses it
+  await E(() => { const l = window._lamina; l.rails.moveTab(l.views[1].tabId, { to: 'split', side: 'right' }); }); await settle(800);
+  const pt = await E(() => { const r = window._lamina.views[0].panel.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + 150, w: r.width }; });
+  await page.mouse.click(pt.x, pt.y); await settle();
+  s = await state();
+  const side = await E(() => window._lamina.views.map((v) => Math.round(v.panel.getBoundingClientRect().left)));
+  check(side[0] < side[1] && pt.w < 900 && s.focused === 'one.csv' && s.filter === '', `[${tag}] split side by side; a click into the left focuses it`, { side, s });
+
+  // 5 ── New view of this file: the same filter at first, then their own
+  await E(async () => { document.getElementById('filter').value = 'a < 10'; await window._lamina.applyFilter('a < 10'); }); await settle();
+  await E(() => window._lamina.newViewOfFocused()); await settle(800);
+  s = await state();
+  const twin = s;
+  await E(async () => { document.getElementById('filter').value = 'a < 100'; await window._lamina.applyFilter('a < 100'); }); await settle();
+  const after = await state();
+  await E(() => { const l = window._lamina; l.setFocus(l.views.find((v) => v.label === 'one.csv')); }); await settle();
+  const orig = await state();
+  check(twin.n === 3 && twin.tabs.includes('one.csv (2)') && twin.filter === 'a < 10' && /10 of 300/.test(twin.meta)
+    && /100 of 300/.test(after.meta) && orig.filter === 'a < 10' && /10 of 300/.test(orig.meta),
+  `[${tag}] New view of this file copies the view, then the two go their own ways`, { twin, after, orig });
+
+  // 6 ── a binary file is a note tab, not a table
+  await E(() => window._lamina.openInTab(new File([new Uint8Array([0, 1, 2, 0, 255, 0, 7, 0])], 'blob.bin'))); await settle();
+  s = await state();
+  const note = await E(() => { const f = window._lamina.focused; return !!(f && f.note && /binary/.test(f.panel.textContent)) && !window._lamina.current; });
+  check(note && s.focused === 'blob.bin' && s.n === 4, `[${tag}] a binary file opens as a note tab saying so`, s);
+
+  // 7 ── several files dropped at once → each its own tab
+  await E(async () => {
+    const dt = new DataTransfer();
+    dt.items.add(new File(['x,y\n1,2\n3,4'], 'd1.csv'));
+    dt.items.add(new File(['x,y\n5,6'], 'd2.csv'));
+    window.dispatchEvent(new DragEvent('drop', { dataTransfer: dt, bubbles: true, cancelable: true }));
+  });
+  await settle(1200);
+  s = await state();
+  check(s.n === 6 && s.tabs.includes('d1.csv') && s.tabs.includes('d2.csv') && s.focused === 'd2.csv', `[${tag}] a drop of two files opens two tabs`, s.tabs);
+
+  // 8 ── closing: the focus falls back to a live view; the last close shows the empty state
+  await E(() => { const l = window._lamina; l.rails.closeTab(l.focused.tabId); }); await settle();
+  s = await state();
+  check(s.n === 5 && s.focused && s.focused !== 'd2.csv' && s.name === s.focused, `[${tag}] closing the focused tab focuses a remaining one`, s);
+  await E(() => { const l = window._lamina; for (const v of l.views) l.rails.closeTab(v.tabId); }); await settle();
+  s = await state();
+  const empty = await E(() => getComputedStyle(document.getElementById('empty')).display);
+  check(s.n === 0 && !s.focused && s.name === 'no file' && empty !== 'none', `[${tag}] closing every tab shows the empty state`, { s, empty });
+
+  check(!errors.length, `[${tag}] no page errors`, errors);
+  await page.context().close();
+}
+await browser.close(); server.close();
+console.log(`\nLAMINA VIEWS SMOKE: ${failed ? 'FAIL' : 'PASS'} (${passed} passed, ${failed} failed)`);
+process.exit(failed ? 1 : 0);

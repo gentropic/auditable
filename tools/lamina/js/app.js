@@ -135,8 +135,9 @@ function makePanel(tabId) {
 }
 const tabTitle = (v) => v.label || 'untitled';
 
-function installView(v) {
-  const mode = _openNext; _openNext = 'replace';
+function installView(v, { background = false } = {}) {
+  const mode = background ? 'tab' : _openNext;
+  if (!background) _openNext = 'replace';
   const prev = focused;
   if (prev) saveChrome(prev);
   if (mode === 'replace' && prev && alive(prev)) {      // read again: same tab, same panel
@@ -146,18 +147,20 @@ function installView(v) {
     rails.updateTab(v.tabId, { title: tabTitle(v) });
   } else {
     v.tabId = 'v' + (++_viewSeq); v.panel = makePanel(v.tabId);
+    const twins = [...views.values()].filter((x) => x.label === v.label).length;   // a second view of one file: "name (2)"
     views.set(v.tabId, v);
     const at = prev && rails.state.root ? findTab(rails.state, prev.tabId) : null;
-    rails.addTab({ id: v.tabId, title: tabTitle(v) }, at && at.container === 'dock' ? { to: 'stack', stackId: at.stack.id } : undefined);
+    rails.addTab({ id: v.tabId, title: twins ? `${tabTitle(v)} (${twins + 1})` : tabTitle(v) }, at && at.container === 'dock' ? { to: 'stack', stackId: at.stack.id } : undefined);
   }
   if (v.note) {
     v.panel.classList.add('is-note');
     v.panel.querySelector('.lv-note b').textContent = v.note.title;
     v.panel.querySelector('.lv-note span').textContent = v.note.msg;
   }
+  syncMulti();
+  if (background) { if (prev && alive(prev)) rails.activateTab(prev.tabId); return; }   // there, waiting; focus stays put
   rails.activateTab(v.tabId);
   setFocus(v);
-  syncMulti();
 }
 
 // Focus a view: the toolbar, footer, filter box and side panels now speak for it.
@@ -174,6 +177,11 @@ function setFocus(v) {
     $('#fileName').textContent = 'no file'; $('#kindBadge').style.display = 'none'; $('#meta').textContent = '—';
     $('#selStats').textContent = ''; $('#empty').style.display = ''; window._laminaVS = null; updateEncHint();
   } else syncViewChrome(v);
+  if (v && v.note && v.note.lazy) {                     // a tab that reads its file the first time it's looked at
+    const load = v.note.lazy; v.note.lazy = null;
+    _openNext = 'replace';                               // …in its own tab
+    Promise.resolve().then(load).catch((e) => showNote(v.label, v.note.badge, "couldn't read this", e.message || String(e), v.note.meta));
+  }
   if (_colPanelOpen) renderColPanel();
   if (_recPanelOpen) { if (current) { const s = grid && grid.getSelection(); renderRecordCard(s ? s.r0 : 0); } else toggleRecordPanel(false); }
 }
@@ -205,6 +213,17 @@ function initWorkspace() {
   });
   rails.on('tab:activate', ({ tab }) => { const v = views.get(tab.id); if (v && v !== focused) setFocus(v); });
   rails.on('tab:close', () => { if (!focused || !alive(focused)) setFocus(anyActiveView()); syncMulti(); });
+}
+
+// "New view of this file": read the focused view's source again into a new tab and give
+// it the same view (filter, sort, calcs, formats — carried as a lens). Then the two go
+// their own ways: two filters over one model, side by side.
+async function newViewOfFocused() {
+  const c = current; if (!c || !c.again) return;
+  const lens = buildLens();
+  _openNext = 'tab';
+  await c.again();
+  if (current && current !== c) { delete lens.interpretation; await applyLensView(lens); }
 }
 
 // Mount a built source (memory / streaming / tape) read-only. Builds the base
@@ -1011,6 +1030,7 @@ function open(name, bytes, force) {
   d.encoding = enc;
   mount(name, d, buildMemorySource(bytes, { kind: d.kind, delimiter: d.delimiter || ',', quote: d.quote || '"', encoding: enc }), bytes.length);
   current.bytes = bytes; current.force = force || {};                 // remember for re-open with new force
+  current.again = () => open(name, bytes, force);
   current.encSuspect = encodingSuspect(sample, enc); updateEncHint();
 }
 
@@ -1022,6 +1042,7 @@ function openInner(label, bytes) {
   if (d.kind === 'binary') return showBinary(label, bytes.length);
   lastScan = 'resident';
   mount(label, d, buildMemorySource(bytes, { kind: d.kind, delimiter: d.delimiter || ',', quote: d.quote || '"' }), bytes.length);
+  current.again = () => openInner(label, bytes);
 }
 
 // ── Datamine .dm (binary table) → a DIRECT record path: no decode-to-text, ever.
@@ -1187,6 +1208,7 @@ function mountSheet(name, tbl, totalBytes = 0) {
   const source = createSheetCursor(tbl, schema);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema, dataStart: 0, decimal: '.', xlsx: tbl.header.sheet };
   installView({ source, d, schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {} });
+  current.again = () => mountSheet(name, tbl, totalBytes);   // a second view shares the resident sheet
   _recPinned = null; _recRow = 0;
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'sheet';
@@ -1216,7 +1238,13 @@ async function openXlsx(file) {
     $('#fileName').textContent = file.name; $('#empty').style.display = 'none';
   };
   if (sheets.length === 1) return openOne(sheets[0].name);
-  showPicker(sheets.map((sh) => ({ path: sh.name, label: `${(sh.rows || 0).toLocaleString()} rows × ${sh.columns || 0} cols` })), openOne);
+  // every sheet a tab: the first is read now, the others the first time you look at them
+  // (a sheet is inflated whole — no point paying for the ones never opened)
+  await openOne(sheets[0].name);
+  for (const sh of sheets.slice(1)) {
+    const size = `${(sh.rows || 0).toLocaleString()} rows × ${sh.columns || 0} cols`;
+    installView({ label: `${file.name} › ${sh.name}`, note: { badge: 'xlsx', title: sh.name, msg: `${size} — read when you open this tab`, meta: `${fmtBytes(file.size)} · xlsx`, lazy: () => openOne(sh.name) } }, { background: true });
+  }
 }
 
 // Mount a .dm: the windowed browse view + the record cursor (filter/sort/stats).
@@ -1226,6 +1254,7 @@ function mountDm(name, reader, h, totalBytes) {
   const source = createDmCursor(reader, h);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: h.schema, dataStart: 0, decimal: '.', dm: true };
   installView({ source, d, schema: h.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, dm: true });
+  current.again = () => mountDm(name, reader, h, totalBytes);
   _recPinned = null; _recRow = 0;                        // fresh file → drop any pinned compare record
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'dm';
@@ -1251,6 +1280,7 @@ function mountParquet(name, buf, t, totalBytes) {
   const { view: baseVs, cursor: source } = createParquetSource(buf, t);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: t.schema, dataStart: 0, decimal: '.', parquet: t.facts };
   installView({ source, d, schema: t.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, parquet: true });
+  current.again = () => mountParquet(name, buf, t, totalBytes);
   _recPinned = null; _recRow = 0;
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'parquet';
@@ -1990,6 +2020,7 @@ async function openStreamSource(file, label, openStream, badge, entryPath) {
     idbCache.set(key, { v: CACHE_VERSION, detect: d, index: indexOf(src) });   // best-effort sidecar
   }
   mount(label, d, src, src.totalBytes);
+  current.again = () => openStreamSource(file, label, openStream, badge, entryPath);
 }
 
 // Pull the first n bytes of a stream (for detection), then cancel.
@@ -2122,7 +2153,7 @@ async function openFile(file, force) {
     if (cached.detect.kind === 'binary') return showBinary(file.name, file.size);
     $('#fileName').textContent = file.name; $('#empty').style.display = 'none';
     mount(file.name, cached.detect, buildSourceFromIndex(file, cached.index), file.size);
-    current.file = file; current.force = {};
+    current.file = file; current.force = {}; current.again = () => openFile(file);
     return;
   }
 
@@ -2146,6 +2177,7 @@ async function openFile(file, force) {
   if (!forced) idbCache.set(key, { v: CACHE_VERSION, detect: d, index: indexOf(src) });   // cache only the auto interpretation
   mount(file.name, d, src, file.size);
   current.file = file; current.force = force || {};                 // remember for re-open with new force
+  current.again = () => openFile(file, force);
   current.encSuspect = encodingSuspect(sample, enc); updateEncHint();
 }
 
@@ -2457,6 +2489,8 @@ $('#mView').onclick = () => menuAt($('#mView'), [
     { label: (theme === 'dark' ? '✓ ' : '') + 'Dark', action: () => setTheme('dark') },
     { label: (theme === 'light' ? '✓ ' : '') + 'Light', action: () => setTheme('light') },
   ] },
+  { label: 'New view of this file', action: () => { if (hasFile()) newViewOfFocused(); } },
+  { sep: true },
   { label: 'Columns…', action: () => toggleColPanel() },
   { label: 'Record inspector…', action: () => toggleRecordPanel() },
   { label: 'Go to row…', action: () => $('#goto').focus() },
@@ -4012,7 +4046,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { openInTab, setFocus, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { openInTab, setFocus, newViewOfFocused, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;

@@ -32,6 +32,7 @@
     "test:micro:host": "node test/micro-host-smoke.mjs",
     "test:micro:structure": "node test/micro-structure-smoke.mjs && node test/micro-structure-smoke.mjs --built",
     "test:lamina:host": "node test/lamina-host-smoke.mjs",
+    "test:lamina:views": "node test/lamina-views-smoke.mjs",
     "test:micro:boot": "node test/micro-boot-smoke.mjs",
     "test:micro:frames": "node tools/micro/dev/frame-lint.mjs",
     "test:micro:cycles": "node tools/micro/dev/cycles.mjs",

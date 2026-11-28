@@ -84,9 +84,10 @@ try {
   // ── binary → hex handoff message ──
   const bin = await page.evaluate(() => {
     window._lamina.open('blob.bin', new Uint8Array([1, 2, 0, 3, 255, 7, 0, 9]));
-    return { binaryShown: getComputedStyle(document.getElementById('binary')).display !== 'none' };
+    const f = window._lamina.focused, note = f && f.panel.querySelector('.lv-note');
+    return { binaryShown: !!(f && f.note && note && getComputedStyle(note).display !== 'none' && /binary/.test(note.textContent)) };
   });
-  bin.binaryShown ? ok('binary file → hex-handoff message shown') : fail('binary not handled');
+  bin.binaryShown ? ok('binary file → a note tab saying so') : fail('binary not handled');
 
   // ── a streamed File (never-resident path) → block index + deep windowed row ──
   const stream = await page.evaluate(async () => {
@@ -1576,21 +1577,20 @@ try {
     });
     const b64 = Buffer.from(bytes).toString('base64');
 
-    const picked = await page.evaluate(async (b) => {
+    // every sheet is a TAB: the first read now, the others the first time they're looked at
+    const opened = await page.evaluate(async (b) => {
       const raw = Uint8Array.from(atob(b), (c) => c.charCodeAt(0));
-      await window._lamina.openFile(new File([raw], 'assays.xlsx'));
+      const before = window._lamina.views.length;
+      await window._lamina.openInTab(new File([raw], 'assays.xlsx'));
       await new Promise((r) => setTimeout(r, 400));
-      const items = [...document.querySelectorAll('#pickerList .pk-item')].map((i) => ({
-        name: i.querySelector('.pk-name').textContent, meta: i.querySelector('.pk-size').textContent }));
-      return { shown: document.getElementById('picker').classList.contains('show'), items };
+      const mine = window._lamina.views.slice(before);
+      return { tabs: mine.map((v) => v.label), lazy: mine.map((v) => !!(v.note && v.note.lazy)), focused: window._lamina.focused && window._lamina.focused.label };
     }, b64);
-    if (picked.shown && picked.items.length === 2 && picked.items.some((i) => i.name === 'Assays') && /rows/.test(picked.items[0].meta))
-      ok(`xlsx: a workbook offers its SHEETS, measured in rows (${picked.items.map((i) => i.name).join(', ')})`);
-    else fail(`xlsx: expected a 2-sheet picker, got ${JSON.stringify(picked)}`);
+    if (opened.tabs.length === 2 && /› Assays$/.test(opened.tabs[0]) && /› General$/.test(opened.tabs[1]) && !opened.lazy[0] && opened.lazy[1] && /Assays/.test(opened.focused))
+      ok(`xlsx: a workbook opens its SHEETS as tabs — ${opened.tabs.join(' · ')} (the second read when looked at)`);
+    else fail(`xlsx: expected two sheet tabs, the second lazy, got ${JSON.stringify(opened)}`);
 
     const mounted = await page.evaluate(async () => {
-      [...document.querySelectorAll('#pickerList .pk-item')].find((i) => i.querySelector('.pk-name').textContent === 'Assays').click();
-      await new Promise((r) => setTimeout(r, 500));
       const vs = window._laminaVS;
       return {
         rows: vs.rowCount(),
@@ -1610,6 +1610,16 @@ try {
     });
     if (/2 of 4/.test(filtered)) ok(`xlsx: the whole toolkit runs on it — "AU > 1" → ${filtered.split('·')[0].trim()}`);
     else fail(`xlsx: filter on an Excel column gave "${filtered}"`);
+
+    const general = await page.evaluate(async () => {
+      const l = window._lamina, g = l.views.find((v) => /› General$/.test(v.label));
+      l.rails.activateTab(g.tabId);
+      for (let i = 0; i < 40 && !(l.current && /› General$/.test(l.current.label)); i++) await new Promise((r) => setTimeout(r, 50));
+      const back = l.views.find((v) => /› Assays$/.test(v.label));
+      return { rows: window._laminaVS && window._laminaVS.rowCount(), label: l.current && l.current.label, assaysKept: !!(back && back.filterResult) };
+    });
+    if (general.rows === 2 && general.assaysKept) ok(`xlsx: the General tab reads its sheet when looked at (${general.rows} rows); Assays keeps its filter`);
+    else fail(`xlsx: the lazy sheet tab gave ${JSON.stringify(general)}`);
   }
 
   // ── §: a CORRUPT archive must fail with a NAME, not hang ──
