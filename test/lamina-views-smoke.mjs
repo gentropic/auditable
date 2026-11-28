@@ -247,6 +247,32 @@ for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamin
     && /␍␊$/.test(pb[3][1]) && pane.after[1][2] === '1',
   `[${tag}] the popover's first lines: preamble struck, header, field counts (a 4 in red), CRLF shown; delimiter → comma redraws them`, pane);
 
+  // 14 ── an instrument's result, pinned beside its table; stale when the view moves on; run again in place
+  const pin = await E(async () => {
+    const l = window._lamina, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    l.openSampleData(); await wait(1500);
+    const t = l.current;
+    await l.applyFilter('LITO = "SULPHIDE"'); document.getElementById('filter').value = 'LITO = "SULPHIDE"';
+    l.openGradeTonnage(); await wait(200);
+    document.getElementById('gtRun').click(); await wait(2500);
+    const pinShown = getComputedStyle(document.getElementById('helpPin')).display !== 'none';
+    document.getElementById('helpPin').click(); await wait(400);
+    const r = l.focused;
+    const below = r.panel.getBoundingClientRect().top > t.panel.getBoundingClientRect().top + 50;
+    const first = { label: r.label, imgs: r.panel.querySelectorAll('.lv-result img').length, tables: r.panel.querySelectorAll('.lv-result table').length, what: r.panel.querySelector('.pin-what').textContent, stale: r.panel.querySelector('.pin-stale').textContent };
+    l.setFocus(t); document.getElementById('filter').value = 'LITO = "OXIDE"'; await l.applyFilter('LITO = "OXIDE"');
+    l.setFocus(r); const stale = r.panel.querySelector('.pin-stale').textContent;
+    r.panel.querySelector('.pin-rerun').click(); await wait(300);
+    document.getElementById('gtRun').click(); await wait(2500);
+    document.getElementById('helpPin').click(); await wait(400);
+    const results = l.views.filter((v) => v.note && v.note.result);
+    return { pinShown, below, first, stale, n: results.length, again: results[0] && results[0].panel.querySelector('.pin-what').textContent, againStale: results[0] && results[0].panel.querySelector('.pin-stale').textContent };
+  });
+  check(pin.pinShown && pin.below && pin.first.label === 'Grade–tonnage · sample_blockmodel.csv' && pin.first.imgs >= 1 && pin.first.tables >= 1 && /filter LITO = "SULPHIDE"/.test(pin.first.what) && pin.first.stale === ''
+    && /changed/.test(pin.stale) && pin.n === 1 && /OXIDE/.test(pin.again) && pin.againStale === '',
+  `[${tag}] a grade–tonnage result pinned under its table (chart + table); stale after the filter changes; "run again" replaces it`, pin);
+
   check(!errors.length, `[${tag}] no page errors`, errors);
   await page.context().close();
 }

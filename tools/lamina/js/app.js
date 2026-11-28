@@ -188,6 +188,7 @@ function setFocus(v) {
     $('#fileName').textContent = 'no file'; $('#kindBadge').style.display = 'none'; $('#meta').textContent = '—';
     $('#selStats').textContent = ''; $('#empty').style.display = ''; window._laminaVS = null; updateEncHint();
   } else syncViewChrome(v);
+  if (v && v.note && v.note.result) checkResult(v);
   if (v && v.note && v.note.lazy) {                     // a tab that reads its file the first time it's looked at
     const load = v.note.lazy; v.note.lazy = null;
     _openNext = 'replace';                               // …in its own tab
@@ -3045,13 +3046,86 @@ const HELP = {
     + `<span style="color:var(--dim)">build <code>${__LAMINA_BUILD__}</code></span>`],
 };
 function showOverlay(title, html) {
+  pinnable(null);
   $('#helpTitle').textContent = title;
   $('#helpBody').innerHTML = html;
   $('.help-box').classList.remove('wide');               // only the column summary is wide
   $('#help').classList.add('show');
 }
 function showHelp(topic) { const [title, body] = HELP[topic] || HELP.about; showOverlay(title, body); }
-$('#helpClose').onclick = () => $('#help').classList.remove('show');
+
+// ── a result, pinned: an instrument's window kept open in a tab beside its table ──────
+// A snapshot — the numbers, the tables, the charts as pictures, the settings as text — labelled
+// with the view it was taken from and that view's filter. It doesn't follow the view; when the
+// view has moved on it says so and offers to run the instrument again. It never mixes two views.
+let _pin = null;                         // { name, src (the view), run } while an instrument's window is open
+function pinnable(name, c, run) {
+  _pin = name ? { name, src: c, run } : null;
+  const b = $('#helpPin'); if (b) b.style.display = _pin ? '' : 'none';
+}
+const viewSig = (c) => JSON.stringify([c === current ? $('#filter').value.trim() : (c.filterText || '').trim(), (c.calcs || []).map((x) => x.expr), c.sort || null]);
+function snapshotOverlay() {
+  const live = $('#helpBody'), copy = live.cloneNode(true);
+  const lc = live.querySelectorAll('canvas'), cc = copy.querySelectorAll('canvas');
+  cc.forEach((cv, i) => { const img = document.createElement('img'); try { img.src = lc[i].toDataURL(); } catch { /* tainted — leave blank */ } img.style.width = lc[i].style.width || lc[i].width + 'px'; img.style.maxWidth = '100%'; cv.replaceWith(img); });
+  const lf = live.querySelectorAll('input, select'), cf = copy.querySelectorAll('input, select');   // the settings, as text
+  cf.forEach((e, i) => {
+    const o = lf[i], t = document.createElement('span'); t.className = 'pin-val';
+    t.textContent = o.type === 'checkbox' ? (o.checked ? '☑' : '☐') : o.tagName === 'SELECT' ? ((o.selectedOptions[0] || {}).textContent || '') : (o.value || o.placeholder || '');
+    e.replaceWith(t);
+  });
+  copy.querySelectorAll('button').forEach((b) => b.remove());
+  copy.querySelectorAll('[id]').forEach((e) => e.removeAttribute('id'));   // ids belong to the live window
+  copy.removeAttribute('id'); copy.className = 'pin-body';
+  return copy;
+}
+function pinResult(replace = null) {
+  const pr = _pin; if (!pr || !pr.src || !alive(pr.src)) return;
+  const src = pr.src, title = $('#helpTitle').textContent;
+  const sig = viewSig(src), filter = (src === current ? $('#filter').value : src.filterText || '').trim();
+  const at = new Date().toTimeString().slice(0, 5);
+  const v = { label: `${pr.name} · ${src.label}`, note: { badge: 'result', title, msg: '', meta: `${pr.name} of ${src.label}${filter ? ` · filter ${filter}` : ''} · ${at}`, result: { src: src.tabId, sig, run: pr.run, name: pr.name } } };
+  const body = snapshotOverlay();
+  $('#help').classList.remove('show');
+  // results gather in one tab group under their table (on a phone: beside it, as tabs)
+  const sib = [...views.values()].find((x) => x !== replace && x.note && x.note.result && x.note.result.src === src.tabId);
+  _openNext = 'tab';
+  setFocus(sib || src);
+  installView(v);
+  const box = document.createElement('div'); box.className = 'lv-result';
+  box.innerHTML = `<div class="pin-head"><span class="pin-what"></span><span class="pin-stale"></span><button class="pin-rerun stats-apply">run again</button></div>`;
+  box.querySelector('.pin-what').textContent = v.note.meta;
+  box.appendChild(body);
+  box.querySelector('.pin-rerun').onclick = () => rerunResult(v);
+  v.panel.classList.remove('is-note'); v.panel.classList.add('is-result'); v.panel.appendChild(box);   // a result, not a note
+  if (!sib && innerWidth >= 720) {
+    const t = findTab(rails.state, src.tabId);
+    if (t && t.container === 'dock') { rails.moveTab(v.tabId, { to: 'split', nodeId: t.stack.id, side: 'bottom' }); rails.activateTab(v.tabId); }
+  }
+  if (replace && alive(replace)) rails.closeTab(replace.tabId);
+  setFocus(v);
+  return v;
+}
+// a pinned result checks its view whenever it's looked at: still the same rows? still open?
+function checkResult(v) {
+  const r = v.note && v.note.result; if (!r) return;
+  const src = views.get(r.src), el = v.panel.querySelector('.pin-stale'), btn = v.panel.querySelector('.pin-rerun');
+  if (!el) return;
+  if (!src || src.note) { el.textContent = ' — its table is closed'; btn.style.display = 'none'; return; }
+  const moved = viewSig(src) !== r.sig;
+  el.textContent = moved ? ' — the view has changed since (filter, sort or calculated columns)' : '';
+  v.panel.classList.toggle('stale', moved);
+  btn.style.display = '';
+}
+function rerunResult(v) {
+  const r = v.note.result, src = views.get(r.src); if (!src || src.note) return;
+  rails.activateTab(src.tabId); setFocus(src);
+  _repin = v;
+  r.run();
+}
+let _repin = null;   // a "run again" in progress: the next pin replaces that result in place
+$('#helpClose').onclick = () => { $('#help').classList.remove('show'); _repin = null; };
+$('#helpPin').onclick = () => { const r = _repin; _repin = null; pinResult(r && alive(r) ? r : null); };
 $('#help').onclick = (e) => { if (e.target.id === 'help') $('#help').classList.remove('show'); };
 // Click categorical top-values in the stats panel to build a set filter — toggles
 // each value (panel stays open), applying `col in a, b, …` live. Close to see the
@@ -3493,6 +3567,7 @@ document.addEventListener('keydown', (e) => {
 }, true);
 async function showColumnStats(uc) {
   const c = current; if (!c) return;
+  pinnable('Statistics', c, () => showColumnStats(uc));
   _statsCol = uc; _statsSelected.clear();
   const name = c.baseVs.header(uc).label;
   const numeric = (c.schema[uc] && c.schema[uc].type) === 'number';
@@ -3623,6 +3698,7 @@ function wireColJump() {
 }
 function showSummary() {
   const c = current; if (!c) return;
+  pinnable('Column summary', c, () => showSummary());
   $('#helpTitle').textContent = `Column summary — ${c.label}${c.filterResult ? ' (filtered)' : ''}`;
   $('.help-box').classList.add('wide');
   $('#help').classList.add('show');
@@ -3633,6 +3709,7 @@ function showSummary() {
 let _dqFindings = null;
 async function showDataQuality() {
   const c = current; if (!c || c.d.kind !== 'delimited') return;
+  pinnable('Data quality', c, () => showDataQuality());
   $('#helpTitle').textContent = `Data quality — ${c.label}${c.filterResult ? ' (filtered)' : ''}`;
   $('.help-box').classList.add('wide');
   $('#help').classList.add('show');
@@ -3686,6 +3763,7 @@ function paintDataQuality(c) {
 let _gbConfig = null, _gbResult = null, _gbSort = { col: 'n', dir: -1 };
 function openGroupBy() {
   const c = current; if (!c || c.d.kind !== 'delimited') return;
+  pinnable('Group by', c, () => openGroupBy());
   const firstCat = c.schema.findIndex((s) => s.type !== 'number'), firstNum = c.schema.findIndex((s) => s.type === 'number');
   _gbConfig = { group: firstCat >= 0 ? firstCat : 0, values: [firstNum >= 0 ? firstNum : 0], weight: null };
   _gbResult = null;
@@ -3789,6 +3867,7 @@ function wireGroupBy(c) {
 let _gtConfig = null, _gtResult = null, _gtSort = { col: 'tonnes', dir: -1 };
 function openGradeTonnage() {
   const c = current; if (!c || c.d.kind !== 'delimited') return;
+  pinnable('Grade–tonnage', c, () => openGradeTonnage());
   const num = c.schema.map((s, i) => ({ s, i })).filter((o) => o.s.type === 'number');
   const colName = (re) => { const s = c.schema.find((x) => re.test(x.name)); return s ? colRef(s.name) : null; };
   const d3 = c.schema.filter((s) => /^d[xyz]$/i.test(s.name));   // block dims → volume = dx·dy·dz
@@ -4168,6 +4247,7 @@ function wireGradeTonnage(c) {
 let _gsConfig = null, _gsResult = null;
 function openGridSummary() {
   const c = current; if (!c || c.d.kind !== 'delimited') return;
+  pinnable('Grid summary', c, () => openGridSummary());
   const num = (re) => { const i = c.schema.findIndex((s) => s.type === 'number' && re.test(s.name)); return i >= 0 ? i : null; };
   _gsConfig = {
     x: num(/^(x|xc|xcent(er|re)?|xmid|east(ing)?|xpt)$/i),
@@ -4464,7 +4544,7 @@ $('#filterGo').onclick = () => applyFilter($('#filter').value);
 window.addEventListener('keydown', (e) => {
   if ((e.ctrlKey || e.metaKey) && e.key === 'o') { e.preventDefault(); pickFile(); }
   else if ((e.ctrlKey || e.metaKey) && e.key === 'f') { e.preventDefault(); openFind(); }
-  else if (e.key === 'Escape') { $('#help').classList.remove('show'); closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
+  else if (e.key === 'Escape') { $('#help').classList.remove('show'); _repin = null; closeCalcEditor(); closeCalcManager(); closeExportDialog(); }
 });
 
 // ── the host API (window.lamina — js/host-api.js) ─────────────────────────────
@@ -4548,7 +4628,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { openOpts, renderOptRaw, complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { pinResult, checkResult, rerunResult, openOpts, renderOptRaw, complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
