@@ -12,7 +12,9 @@ and, where it is a bug, how to get round it; when a fix lands, the sentence mark
    and text but not Datamine (`open()` does check it). Repro: probe `formats` (model.dm.gz,
    model-dm.zip). Same gap for an `.xlsx` inside a zip (not probed). Book: ch:formats §archives says so.
 
-2. **The binary note says "use the hex viewer for this one" — there is no hex viewer.** `showBinary`.
+2. *(FIXED by the code track — the note now reads "not a table — View → Raw (hex) shows its bytes";
+   the book follows the new text. Still stale: Help → About's "binary → hex" wording is right now.)*
+   **The binary note says "use the hex viewer for this one" — there is no hex viewer.** `showBinary`.
    Help → About also says "binary → hex". The raw view (code track) is the fix; until then the message
    promises something that doesn't exist. Book: ch:open §text (pending box).
 
@@ -53,6 +55,39 @@ and, where it is a bug, how to get round it; when a fix lands, the sentence mark
     model opens with `Cu_pct` heat-mapped over 0–0.059 % while the column runs to 7.98 %, so every ore
     block is the same saturated top colour — the showcase heat map is two-tone. Use the spread sample
     (or the gutter's own sample values). Probe `clip`. Book: ch:grid §colour scales (a caution box).
+
+11. **A calculated column's type is guessed from the FILE's first six rows.** `inferCalcType` (and the
+    editor's preview) evaluates the expression on rows 0–5 of the base view — the file's order, not the
+    view's — and calls it a number only if those six give numbers. `if(Cu_pct >= 1, Cu_pct, blank)` on
+    the sample is blank on its first six rows (the waste cap), so the column is typed TEXT: no histogram,
+    Statistics shows top values (`1.034 ×16 …`), it can't be a grade–tonnage grade. Filters still work
+    (number-looking text compares as a number). Should use the expression's static type where known
+    (an `if` whose branches are numeric/blank → number) or sample the spread rows. Probe `calc`.
+    Book: ch:calc (a caution box: Treat as number).
+
+12. **An unknown function gives an unhelpful error.** `foo(1)` → "expr parse error: trailing input near
+    '('" (expr bundle). "unknown function foo — did you mean floor?" would match how unknown columns are
+    reported.
+
+13. **A calculated column's name may contain `-`**, which the expression language then reads as minus
+    (`cu-hi` must be written `` `cu-hi` ``). The editor's rule is `[A-Za-z_][A-Za-z0-9_-]*`; dropping `-`
+    avoids handing users the OK-Indic trap.
+
+14. **Data quality's "thousands separators" check can never fire.** `scanDataQuality` tests
+    `/^-?\d{1,3}(,\d{3})+…$/` only in the branch where `parseNum(t)` succeeded — but with decimal '.',
+    `parseNum('1,234')` is `Number('1,234')` = NaN, so such values go to the non-numeric branch and are
+    reported as "non-numeric values (e.g. 1,234)". Move the test into the NaN branch. Book: ch:dq table.
+
+15. **Clicking a group (group by) replaces the current filter.** Group a FILTERED view, click a group →
+    the grid shows the whole group, the original filter gone. Better: AND the group condition onto the
+    current filter. Book: ch:groupby (a caution box).
+
+16. **A single-precision `.dm` exports its numbers with float32 noise.** SP stores 4-byte floats; lamina
+    widens them to doubles and stringifies the double: a stored 0.1 exports as `0.10000000149011612`,
+    2.524 as `2.5239999294281006` (export, `lamina.rows()`, and the cell text). The ".dm → CSV converter"
+    then writes 17-digit noise into every grade. Format SP values as the SHORTEST decimal that round-trips
+    the float32 (e.g. try `toPrecision(6..9)` until `Math.fround(parsed) === x`). EP (8-byte) is fine.
+    Probe `dmsp`. Book: ch:formats §dm + ch:export (caution boxes).
 
 ## Confusing behaviour (works as coded; worth a look)
 

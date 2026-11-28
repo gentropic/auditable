@@ -1,2 +1,127 @@
-\chapter{14-stats}\label{tmp:14-stats}
-TODO
+\chapter{Statistics}\label{ch:stats}
+\begin{goals}
+\textbf{In this chapter} you summarise one column exactly, every column at once, and the cells you have
+selected, and learn which figures are exact and which are approximate.
+\end{goals}
+
+\section{One column}\label{sec:one-column}
+
+Double-click the distribution above a column, or choose \ui{Statistics — …} on its header's or a cell's
+menu. lamina scans the column (with a filter on, only the matching rows; the window's title then says
+\ui{(filtered)}) and opens its statistics. A large file shows the scan's progress and a \ui{cancel}
+button; \key{Esc} cancels too.
+
+\shot[0.62\linewidth]{stats-cu}{The statistics of \col{Cu\_pct} on the sample: the histogram with its
+quartiles drawn over it, and the figures below.}
+
+\subsection{A number column}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries figure & \sffamily\bfseries what it is \\
+\midrule
+count & rows scanned \\
+non-null & rows with a number in this column \\
+nulls & rows where it is blank \\
+non-numeric & rows where it holds something that isn't a number, with up to twelve of them as examples
+(\code{<0.01}, \code{n/a}, \code{-}); shown only when there are some \\
+excluded & values left out by \ui{exclude zeros} or \ui{exclude negatives} (below) \\
+min, max, mean, sum & over the numbers \\
+std & the sample standard deviation, $n-1$ in the denominator \\
+CV & the coefficient of variation, std divided by the absolute mean \\
+skew & the skewness (below) \\
+zeros & how many values are exactly 0, and their share \\
+p5, p25, median, p75, p95 & the quantiles \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Above the figures is the column's histogram, 40 bars, with the middle half of the values (p25 to p75)
+shaded and the median marked. \ui{log x} draws it on a log scale of value, for a skewed grade.
+\ui{copy} copies the figures as tab-separated text; \ui{png} saves the histogram as an image.
+
+\subsection{Leaving out zeros and negatives}
+
+A grade column often holds zeros for unestimated or waste blocks and negative codes for missing values,
+and both distort its statistics. Tick \ui{exclude zeros}, \ui{exclude negatives} or both, and click
+\ui{apply}: the column is scanned again without them. They are counted under \ui{excluded}, not hidden.
+
+\subsection{A text column}
+
+For text, the window gives the count, the blanks and the number of distinct values (\ui{+} after it when
+there are more than 100{,}000 and lamina stopped counting), and the most common values with their counts
+and shares. Click values in that list to build a filter of them, one click to add a value and another to
+take it away: \code{LITO in "OXIDE", "TRANSITION"}. The grid follows as you click.
+
+\subsection{How the figures are computed}\label{sec:stats-maths}
+
+The mean, standard deviation and skewness are computed in one pass with Welford's method
+\parencite{welford1962}: running sums of the deviations from the running mean, which stay accurate where
+summing squares would lose digits (a column of UTM northings, say). For $n$ values with mean
+$\bar{x}$,
+\[
+s = \sqrt{\frac{\sum (x_i-\bar{x})^2}{n-1}}, \qquad
+g_1 = \frac{\sqrt{n}\,\sum (x_i-\bar{x})^3}{\left(\sum (x_i-\bar{x})^2\right)^{3/2}} .
+\]
+The skewness $g_1$ is the moment form, without the small-sample correction some packages apply; on more
+than a few hundred values the two agree.
+
+The quantiles are exact: lamina keeps the column's numbers as it scans, sorts them, and takes the
+\term{nearest rank}, the value at position $\mathrm{round}(p(n-1))$ counting from 0. It doesn't
+interpolate between neighbours, so on a short column the median can differ a little from a package that
+does. Keeping the numbers is what costs memory here: eight bytes a value. Past 5{,}242{,}880 values lamina
+stops keeping them, and the window says \ui{quantiles: too many values}; every other figure is still
+exact. Filter first to get the quantiles of a subset.
+
+\section{Every column: the column summary}\label{sec:summary}
+
+\ui{Σ stats} on the toolbar, or \menu{Tools>Column summary (Σ stats)…}, scans the whole table once for
+every column at the same time, and opens the \term{column summary}: one row per column.
+
+\shot{summary}{The column summary of the sample: one row per column, sortable by any figure.}
+
+Its columns are \ui{type} (\ui{num} or \ui{txt}), \ui{n}, \ui{null\%}, \ui{non-num}, \ui{min}, \ui{max},
+\ui{mean}, \ui{std}, \ui{CV}, \ui{skew}, \ui{zero\%}, \ui{p50}, and for text, \ui{distinct}. Click a column
+heading to sort by it: by \ui{null\%} or \ui{non-num} to find the gaps and the junk in a file you have just
+received, by \ui{CV} to find the erratic grades. Click a row for that column's own statistics, or its
+name to scroll the grid to it. \ui{copy all} copies the table.
+
+The summary makes two passes, not one per column: the first for counts, sums and the range of each
+column, the second for a histogram of each between the range the first found. So it costs two reads of
+the file however many columns there are, and its figures fill a cache: afterwards, any column's
+statistics open at once. \ui{Σ stats}' \ui{▾} offers \ui{Precompute only (warm cache)}: the two passes
+without opening the summary, so that later statistics are instant.
+
+\subsection{What is approximate}
+
+Everything in the summary is exact except the median. Keeping every value of every column would cost
+too much memory, so the summary's \ui{p50} is read off the column's histogram, interpolating inside the
+bar that holds the middle value, and is marked \ui{≈}. A column's statistics opened from the cache show
+the same \ui{≈} quantiles, with \ui{compute exact} to scan that column properly.
+
+\begin{caution}
+On a skewed grade the \ui{≈} median can be far off. The histogram has 40 equal bars between the
+minimum and the maximum, and when most values sit in the first bar, the interpolation inside it says
+little: on the sample, \col{Cu\_pct}'s summary median is 0.134 where the exact median is 0.042. Treat
+\ui{p50 ≈} as a rough figure, and open the column's statistics (\ui{compute exact}) before quoting it.
+\end{caution}
+
+\section{The selection}\label{sec:selection-stats}
+
+The quickest summary is the selection line (\cref{sec:selection}): select cells, and the status bar gives
+their count, sum, mean, minimum and maximum, over the first 50{,}000 cells of a large selection.
+
+\begin{tryit}
+Meet a file in a minute.
+\begin{enumerate}
+\item Open the sample and click \ui{Σ stats}.
+\item Sort the summary by \ui{CV}, highest first: the three grades \col{Ag\_gpt}, \col{Au\_gpt} and
+\col{Cu\_pct} lead, then \col{ore\_pct}; \col{density}, the coordinates and the constant block sizes
+trail.
+\item Click the \col{Au\_gpt} row. Its statistics open from the cache, with \ui{≈} quantiles. Click
+\ui{compute exact}.
+\item Tick \ui{exclude zeros} and \ui{apply}: the quarter of the blocks with no gold leave the mean, and
+the median rises.
+\end{enumerate}
+\end{tryit}

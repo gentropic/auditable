@@ -1,2 +1,84 @@
-\chapter{19-lens}\label{tmp:19-lens}
-TODO
+\chapter{Lenses}\label{ch:lens}
+\begin{goals}
+\textbf{In this chapter} you save the way you are looking at a table, not the table, and apply it to the
+next file of the same shape.
+\end{goals}
+
+A \term{lens} is a view written down: the filter, the sort, the calculated columns, the formats and
+colour scales, which columns are hidden, their order and widths, the grade–tonnage setup, and how the file
+had to be read. It is a small file, \file{.lamina}, of plain JSON. It holds none of the data.
+
+The point is the next file. This month's model export has the same columns as last month's; a lens made
+on last month's gives this month's the same filter, the same derived columns, the same report, in one
+step. A lens can also be passed to a colleague, who opens it on their copy of the file and sees what you
+saw.
+
+\begin{pending}[title={\faHourglassHalf\enskip Lenses are growing}]
+This chapter describes the lens as it is today: one view of one file. Lenses are being extended to hold
+several views and several files, with their arrangement in tabs and splits, so that a lens can also bring
+back a whole session; and recent files will restore their last view by themselves
+(\file{spec\_inbox/lamina-workspace-spec.md}, §4). The chapter will be rewritten when that lands.
+\end{pending}
+
+\section{What a lens keeps}\label{sec:lens-keeps}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries kept & \sffamily\bfseries as \\
+\midrule
+how the file is read & only the settings you changed in the interpretation popover: delimiter, header,
+decimal, skip, comment (\cref{sec:interpretation}) \\
+the filter & its text \\
+the sort & each key's column name and direction \\
+calculated columns & each one's name, expression and type \\
+per column & number format, colour scale (palette, scale, clipping, reversal), hidden, width, a
+text/number override \\
+the column order & when you reordered the columns \\
+frozen columns & which ones \\
+grade–tonnage & the factors and the density unit, the group, and each grade with its unit, cutoffs and
+plot ranges, when grade–tonnage was set up in the session \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Everything refers to columns by name. A colour scale's range isn't kept: it belongs to the data, and is
+worked out afresh from the file the lens is applied to.
+
+\section{Saving and applying}\label{sec:lens-use}
+
+\menu{Data>Save lens…} writes the current view as a lens, named after the file:
+\file{model\_2025-10.lamina} for \file{model\_2025-10.csv}. \menu{Data>Apply lens…} picks a lens and
+applies it to the open table. Opening a \file{.lamina} file any other way (\menu{File>Open…}, a drop, the
+operating system's \emph{Open with} where lamina is installed) applies it too; opened with no table
+open, it waits, and is applied to the next file you open.
+
+Applying a lens re-reads the file first when the lens's reading settings differ from the current ones,
+then adds the calculated columns, then the filter, the sort and the rest.
+
+\subsection{What doesn't match}\label{sec:lens-skips}
+
+A name in the lens that the file doesn't have (a column for a format, a sort key, a grade) is skipped,
+and the status line says what was: \code{lens applied (from model\_2025-09.csv) — skipped: …}. lamina never
+applies a setting to a different column than the one it was made on. A calculated column whose name the
+file already uses as a column is skipped the same way. Names are matched without regard to case, as in
+expressions.
+
+When a lens was made on another file, the status line names it: \code{(from model\_2025-09.csv)}.
+
+\begin{note}
+A filter or a calculated column that uses a column the new file lacks is still added, and then reports an
+unknown column, as it would if you had typed it (\cref{sec:filter-errors}). Fix the expression, or the
+file.
+\end{note}
+
+\begin{tryit}
+Carry a view from one file to the next.
+\begin{enumerate}
+\item In the sample, filter \code{LITO = "SULPHIDE"}, add the calculated column \col{t} (\code{dx * dy *
+dz * density}), hide \col{ID}, and colour \col{Au\_gpt}.
+\item \menu{Data>Save lens…}. You get \file{sample\_blockmodel.lamina}.
+\item Close lamina and open it again. Open the sample, then drop the \file{.lamina} file onto the window.
+The filter, the column, the hidden \col{ID} and the colours come back.
+\end{enumerate}
+\end{tryit}

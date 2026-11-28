@@ -1,2 +1,88 @@
-\chapter{A-host}\label{tmp:A-host}
-TODO
+\chapter{window.lamina}\label{app:host}
+\begin{goals}
+\textbf{This appendix} is for people building a page around lamina: a portal, a workbench, an agent's
+tool. It documents \code{window.lamina}, the versioned interface such a page drives lamina through.
+\end{goals}
+
+A page embeds lamina in an \code{<iframe>} from the same origin and calls \code{window.lamina} in the
+frame. Add \code{?embed=1} to lamina's address to hide its title from the first paint.
+
+\begin{codeblock}
+iframe.addEventListener('lamina:ready', () => {
+  const lamina = iframe.contentWindow.lamina;
+  …
+});
+// or: await iframe.contentWindow.lamina.ready
+\end{codeblock}
+
+\section{Its promises}
+
+\begin{itemize}
+\item \textbf{Versioned}: \code{lamina.version} is 1, and changes within version 1 only add.
+\item \textbf{Plain data out}: numbers, text, arrays and objects, never a live object from inside lamina.
+\item \textbf{Columns by name}, without regard to case, as in expressions.
+\item \textbf{Actions return promises}, which reject with the reason; reading a value is synchronous.
+\item \textbf{One table at a time}: every call acts on the open table.
+\end{itemize}
+
+\code{window.\_lamina} also exists. It is lamina's test surface, reaching into internals that can change
+at any commit. Build on \code{window.lamina}.
+
+\begin{pending}[title={\faHourglassHalf\enskip Several views}]
+With views and panels (\cref{ch:views}), version 1 is being extended additively: \code{open()} returns a
+view id, calls take an optional \code{view}, \code{views()} lists them, and lenses are the version with
+several views (\cref{ch:lens}). The calls below keep working against the focused view.
+\end{pending}
+
+\section{Calls}
+
+\begin{description}[style=nextline]
+\item[\code{open(file, \{ name \})}] Opens a \code{File}, \code{Blob}, \code{FileSystemFileHandle} or bytes,
+as a dropped file is opened. Resolves to \code{info()}. Rejects when the file isn't a table, or holds
+several (an archive) and lamina is showing its picker.
+\item[\code{info()}] \code{null}, or \code{\{ name, format, bytes, rows, totalRows, columns, filter,
+sort \}}. \code{rows} counts the current view; \code{format} is \code{csv}, \code{tsv}, \code{dm},
+\code{parquet}, \code{xlsx} or \code{text}.
+\item[\code{columns()}] \code{[\{ name, type, hidden, format, width, calc?, expr? \}]}, in the file's
+order; \code{type} is \code{number} or \code{string}.
+\item[\code{setColumn(name, \{ hidden, type, format \})}] hide or show, read as number or text, number
+format as a lens writes it: \code{\{ mode: 'fixed' | 'sci' | 'group', digits \}}.
+\item[\code{orderColumns(names)}] puts these columns first, in this order; resolves to the whole order.
+\item[\code{rows(start, count, \{ columns \})}] rows of the current view (filtered and sorted):
+\code{\{ columns, rows: [[…]], records \}}. Numbers come back as numbers, blanks as \code{null};
+\code{records} gives each row's record number in the file, from 0.
+\item[\code{row(i)}] view row \code{i} as \code{\{ column: value \}}.
+\item[\code{positionsOf(records)}] file records (from 0, as \code{rows()} reports them) to their rows in
+the current view, $-1$ where the filter leaves one out. Synchronous; one pass over the view.
+\item[\code{filter(expr)}, \code{clearFilter()}] the filter language. Resolves to \code{\{ matched, total
+\}}, and on a Parquet file \code{rowGroups: \{ skipped, total \}}, the row groups this filter skipped by
+their statistics. A bad expression rejects with the message the filter box would show.
+\item[\code{sort([\{ column, desc \}])}] most significant key first; \code{[]} or \code{null} clears.
+\item[\code{goto(i)}] brings a view row into sight.
+\item[\code{select(\{ from, to, columns \})}, \code{select(\{ record, columns \})}] selects a block of rows
+and columns, or the row holding a file record (rejected when the filter leaves it out).
+\item[\code{selection()}] \code{\{ from, to, columns, record \}}, or \code{null}.
+\item[\code{addCalc(name, expr)}, \code{removeCalc(name)}] calculated columns.
+\item[\code{lens()}, \code{applyLens(lens)}] the view as a lens object; \code{applyLens} resolves to
+\code{\{ skipped \}}.
+\item[\code{stats(column)}] count, blanks, minimum, maximum, mean, standard deviation, quantiles and
+histogram (or a text column's top values), over the filtered rows when a filter is on.
+\item[\code{groupBy(\{ by, values, weight \})}] \code{\{ by, groups: [\{ key, count, values: \{ column:
+\{ n, mean, std, min, max, sum, wmean \} \} \}], total, truncated \}}.
+\item[\code{gradeTonnage(\{ by, grades, volume, density, proportion, densityUnit \})}] tonnes and
+tonnage-weighted grade per group; the factors are expressions.
+\item[\code{export(\{ format, columns, allRows, header, to \})}] the current view, or all rows, as CSV or
+TSV: a \code{Blob}, or with \code{to}, a \code{WritableStream}, streamed, resolving to \code{\{ rows \}}.
+Use \code{to} for large extracts.
+\item[\code{chrome()}, \code{setChrome(\{ title \})}] show or hide lamina's title.
+\end{description}
+
+\section{Events}
+
+On lamina's window: \code{lamina:ready} (also on your \code{<iframe>} element), \code{lamina:opened} with
+\code{info()} as its detail, \code{lamina:open-failed} with \code{\{ name, reason, detail \}}, and
+\code{lamina:selection} with \code{selection()}, once per change.
+
+\begin{caution}
+Inside your page, lamina is only as sealed as your page (\cref{ch:sealed}).
+\end{caution}

@@ -1,2 +1,39 @@
-\chapter{B-keys}\label{tmp:B-keys}
-TODO
+\chapter{Keys and mouse}\label{app:keys}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries input & \sffamily\bfseries does \\
+\midrule
+\key{Ctrl}+\key{O} & open a file \\
+\key{Ctrl}+\key{F} & find in the table (\cref{sec:find}) \\
+\key{Enter}, \key{Shift}+\key{Enter} in find & next, previous match \\
+\key{Esc} in find & close it \\
+\key{Enter} in the filter box & apply the filter \\
+\key{Esc} in the filter box & clear the filter \\
+\key{↑} \key{↓} \key{Tab} in a suggestion list & move through it, take one \\
+\key{Ctrl}+\key{Z} in the filter box & the filter it held before \\
+\key{Ctrl}+\key{C} & copy the selection as tab-separated text \\
+\key{Esc} during a scan & cancel it \\
+\key{Enter} in the row box & jump to that row \\
+\key{↑} \key{↓} in the record inspector & the previous, next row \\
+\key{Enter}, \key{Esc} in the calculated-column editor & add the column, cancel \\
+\midrule
+click a header & sort: ascending, descending, off \\
+right-click a header & sort, then-by, statistics, filter by, text or number, number format, colour scale,
+hide and show, calculated columns, autofit \\
+right-click a cell & copy (with header, with row \#), filter by this value, statistics, inspect the row \\
+drag a header's right border & resize the column; double-click it to fit \\
+click, drag across a selection & select cells; \key{Shift}-click extends \\
+hover a distribution & read the value under the pointer \\
+click a distribution & filter to that bar or value \\
+drag across a distribution & filter to the range or values \\
+double-click a distribution & the column's statistics \\
+click the kind badge & how the file is read (\cref{sec:interpretation}) \\
+click \ui{⚠ encoding?} & the same, for the encoding \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Scrolling is locked to one axis per gesture unless \menu{View>Lock scroll to one axis} is off. On a Mac,
+\key{⌘} stands for \key{Ctrl}.

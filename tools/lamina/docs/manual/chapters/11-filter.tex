@@ -1,2 +1,133 @@
-\chapter{11-filter}\label{tmp:11-filter}
-TODO
+\chapter{The filter}\label{ch:filter}
+\begin{goals}
+\textbf{In this chapter} you narrow the table to the rows you care about: typing a filter, building one
+from the grid, editing it as controls, reading its errors, and knowing what it costs on a large file.
+\end{goals}
+
+The filter is a condition on a row. lamina keeps the rows for which it is true, in their order in the
+file, and everything else (the grid, the sort, the statistics, the instruments, the export) works on
+those rows. The condition is written in lamina's expression language, which \cref{ch:expr} describes in
+full; this chapter is about using it.
+
+\section{The filter box}\label{sec:filter-box}
+
+Type a condition in the box on the toolbar and press \key{Enter}:
+
+\begin{codeblock}
+LITO = "SULPHIDE" and Cu_pct > 0.5
+\end{codeblock}
+
+The grid shows the matching rows, and the status line counts them:
+\code{5,362 of 120,000 rows (filtered)}. \key{Esc} in the box clears the filter, and so does the \ui{×}
+at its end; \ui{Filter} applies it, as \key{Enter} does. The box keeps its own undo: \key{Ctrl}+\key{Z}
+brings back what it held before.
+
+As you type, the box colours the expression: column names, text, numbers, keywords and functions each
+in their own colour, so a column name typed where text was meant shows at once. A list of suggestions
+follows the cursor: column names, functions, keywords, and after \code{LITO =} or \code{LITO in (}, the
+column's own values, already quoted. \key{↑} and \key{↓} move through it, \key{Tab} or \key{Enter}
+takes one, and \key{Esc} closes the list (a second \key{Esc} then clears the filter). While the list is
+open, \key{Enter} takes a suggestion rather than applying the filter.
+
+\begin{note}
+A word on its own is a column; a word in quotes is text. \code{LITO = "OXIDE"} compares the column with
+the text; \code{LITO = OXIDE} looks for a column called OXIDE. Picking a value from the suggestions puts
+the quotes in for you. \Cref{sec:names} has the details.
+\end{note}
+
+\section{When the filter is wrong}\label{sec:filter-errors}
+
+A filter that can't be read turns the box red and the status line says why, prefixed \code{filter:}. The
+grid keeps showing what it showed before.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily}p{0.38\linewidth}L@{}}
+\toprule
+\normalfont\sffamily\bfseries you typed & \sffamily\bfseries lamina says \\
+\midrule
+cu\_pc > 1 & \code{unknown column: cu\_pc — did you mean Cu\_pct?} \\
+Cu\_pct > & \code{expr parse error: unexpected end of expression} \\
+select * from t where Cu\_pct > 1 & \code{the filter IS the WHERE clause — drop the rest, just: Cu\_pct > 1} \\
+ZONE matches "(a+)+" & a refusal of the pattern, which could take forever on some values
+(\cref{sec:text-match}) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\begin{caution}
+For a value typed without quotes, the suggestion can mislead: \code{LITO = OXIDE} gives \code{unknown
+column: OXIDE — did you mean ID?}, because OXIDE is two letters from no column and three from \col{ID}.
+What it means is that \code{OXIDE} needs quotes.
+\end{caution}
+
+\section{Filters from the grid}\label{sec:filter-from-grid}
+
+You don't have to type a filter. Several things in the grid write one into the box and apply it:
+
+\begin{description}
+\item[A cell's menu] \ui{Filter LITO = OXIDE}: the rows with that cell's value. lamina writes it in
+the C-style spelling, \code{LITO == "OXIDE"}, which means the same as \code{=}.
+\item[A header's menu] \ui{Filter by Cu\_pct…} puts the column's name in the box, ready for you to type
+the rest.
+\item[A distribution] a click or a drag over the glyph above a column (\cref{sec:gutter-use}).
+\item[The statistics window] of a text column: click values in its list to build \code{LITO in "OXIDE",
+"TRANSITION"}, one click per value (\cref{sec:one-column}).
+\item[Group by] a click on a group filters to it (\cref{ch:groupby}).
+\end{description}
+
+Each of these replaces the filter in the box; none adds to it. To combine, edit the box.
+
+\section{The filter as controls}\label{sec:drawer}
+
+The \ui{▾} at the end of the filter box opens the filter's \term{drawer}: the current expression drawn as
+controls, one for each condition. A range of numbers (\code{Cu\_pct between 0.5 and 2},
+\code{Z >= 450}) becomes a slider over the column's range; a set of values (\code{LITO in (…)}) a
+row of value chips over the column's values, selected or not. Each condition has its operator in a list
+beside it (change \ui{between} to \ui{>=}, \ui{in} to \ui{not in}) and \ui{×} to remove it; \ui{add
+condition…} adds one for another column, joined by the \ui{and} or \ui{or} beside it. The expression itself
+is shown above the controls and can be edited there. Moving a control rewrites that part of the expression,
+and the rest is left as you wrote it, comments and all. \ui{reset} goes back to the filter the drawer
+opened with.
+
+\shot[0.75\linewidth]{drawer}{The filter drawer for \code{LITO in ("SULPHIDE", "TRANSITION") and
+Cu\_pct between 0.5 and 2}: checkboxes for the lithologies, a slider for copper.}
+
+The sliders' ranges come from the sample behind the distributions (\cref{sec:gutter-sample}), so they
+are approximate; the numbers they write into the expression are exact. The filter is applied a moment
+after a control stops moving, not at every step of a drag, since each application is a scan of the file.
+
+\section{What a filter scans}\label{sec:filter-scan}
+
+A filter is a scan: it reads the file once and keeps the location of each matching row
+(\cref{sec:scans}). On a large file the status line counts it, \code{filtering… 42\% · Esc to cancel}, and
+\key{Esc} stops it, leaving the previous view.
+
+How much of the file a filter reads depends on the format:
+
+\begin{itemize}
+\item On delimited text, every row is read and split, whatever the filter names.
+\item On a \file{.dm}, only the fields the filter names are read (\cref{sec:strided}).
+\item On Parquet, only those columns are read, and row groups whose statistics rule a match out are
+skipped (\cref{sec:pruning}).
+\end{itemize}
+
+With a calculated column defined, a \file{.dm} or Parquet filter reads every column
+(\cref{ch:calc}).
+
+\section{Filter and sort together}
+
+A filter and a sort compose. The sort orders the matches, and changing the filter sorts the new matches
+again. On a file too large to sort whole (\cref{sec:huge-limits}), filter first and sort the result:
+filtering keeps 24 bytes per match, and the sort then has only the matches to order.
+
+\begin{tryit}
+Three ways to the same rows.
+\begin{enumerate}
+\item In the sample, type \code{LITO = "TRANSITION" and Au\_gpt > 1} and press \key{Enter}. Note the
+count in the status line.
+\item Press \key{Esc}. Right-click a TRANSITION cell in \col{LITO}, choose \ui{Filter LITO =
+TRANSITION}, then add \code{and Au\_gpt > 1} to the end of what the box holds and press \key{Enter}.
+The same count.
+\item Open the drawer with \ui{▾}. Drag the \col{Au\_gpt} slider's lower end, and watch the count follow.
+\end{enumerate}
+\end{tryit}

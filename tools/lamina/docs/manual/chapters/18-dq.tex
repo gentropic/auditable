@@ -1,2 +1,86 @@
-\chapter{18-dq}\label{tmp:18-dq}
-TODO
+\chapter{Data quality}\label{ch:dq}
+\begin{goals}
+\textbf{In this chapter} you check a file for the quiet faults that spoil an estimate without anyone
+noticing: codes that lost their leading zeros, junk in numeric columns, missing-value codes, and more.
+\end{goals}
+
+\menu{Tools>Data quality…} reads a sample of the file (or, with a filter on, every filtered row) and flags
+each column that shows a known kind of fault. Every flag is something that has, somewhere, ruined an
+estimate quietly: a hole called \code{007} that became \code{7} and stopped joining to its collar, a
+$-999$ averaged in as a grade.
+
+\shot{dq}{Data quality on a small assay file: \col{CODE} has lost its leading zeros, \col{VAL} holds a
+missing-value code.}
+
+\section{What it checks}\label{sec:dq-checks}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}llL@{}}
+\toprule
+\sffamily\bfseries flag & \sffamily\bfseries level & \sffamily\bfseries the rule \\
+\midrule
+all blank & high & every value in the sample is empty \\
+leading zeros lost & high & a number column has values written with a leading zero (\code{007},
+\code{012}): codes, read as numbers \\
+non-numeric values & warn & a number column has values that aren't numbers, with examples \\
+thousands separators & warn & meant for values like \code{1,234} in a number column; at present such
+values are reported under \ui{non-numeric values} instead, with \code{1,234} among the examples \\
+whitespace padding & warn & values with spaces before or after them, which break filters and joins
+(\code{"OXIDE "} isn't \code{"OXIDE"}) \\
+possible sentinel & warn & the column's minimum is $-9$, $-99$, $-999$, $-9999$ or $-99999$ and occurs at
+least twice: a missing-value code, not a measurement \\
+constant & info & every value is the same \\
+dates stored as text & info & at least 80\% of a text column's values look like dates
+(\code{2024-03-15}, \code{2024/3/15}); lamina has no date type, so they sort and compare as text \\
+high blank rate & info & half the column or more is blank \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The flags are listed high first, then warnings, then information, in column order within each. A column
+with nothing wrong isn't listed; a file with nothing wrong says \ui{✓}.
+
+\section{The sample}\label{sec:dq-sample}
+
+Without a filter, the check reads the same spread sample of 8{,}192 rows the distributions are drawn from
+(\cref{sec:gutter-sample}): quick on any file, and spread through it, but a sample. A fault in a few rows
+can be missed. With a filter on, it reads every row the filter keeps, so to check a whole large file
+exactly, filter it to everything a column can hold (\code{ID is filled}) first; that is a full scan.
+
+\section{Acting on a flag}\label{sec:dq-act}
+
+Click a flag's row for the column's statistics, which show the non-numeric values and the distribution
+(\cref{sec:one-column}); click the column's name to scroll the grid to it. \ui{copy all} copies the list.
+
+\ui{leading zeros lost} carries \ui{fix: treat as text}: one click, and the column is read as text, its
+codes back as they were written (\cref{sec:text-number}). The others have no button, because the fix
+depends on what the value means:
+
+\begin{description}
+\item[A sentinel] leave it out where it matters, \code{nullif(VAL, -999)} as a calculated column, or a
+filter \code{VAL != -999}; or exclude negatives in its statistics.
+\item[Thousands separators] check the file's decimal setting (\cref{sec:decimal-comma}): a file written
+with a decimal comma shows its numbers this way when read with a point.
+\item[Whitespace] \code{trim(LITO)} as a calculated column, and filter or group by that.
+\item[Non-numeric values] see them in the statistics; decide whether \code{<0.01} means half the
+detection limit, zero, or a blank, and make a calculated column that says so.
+\end{description}
+
+\begin{tryit}
+A file with two faults.
+\begin{enumerate}
+\item Save these lines as \file{codes.csv}:
+\begin{codeblock}
+CODE,VAL,FLAG
+007,1.5,a
+012,-999,b
+013,-999,c
+100,2.5,d
+\end{codeblock}
+\item Open it in lamina. \col{CODE} shows 7, 12, 13, 100.
+\item Open \menu{Tools>Data quality…}. Two flags: \col{CODE}, leading zeros lost, three values; \col{VAL},
+a possible sentinel, $-999$ twice.
+\item Click \ui{fix: treat as text} on the first. \col{CODE} reads \code{007}, \code{012}, \code{013},
+\code{100}.
+\end{enumerate}
+\end{tryit}

@@ -1,0 +1,15 @@
+# the screenshots the book asks for: name | what the shot shows (scenes/*.mjs stage them)
+empty | the empty screen of a fresh lamina
+overview | the sample block model as it opens: sorted by Cu_pct, Cu_pct heat-mapped, distributions above the headers
+interpretation | the interpretation popover on the sample (Detected facts + the override settings)
+gutter | the header strip of the sample: histograms (log), the LITO top-values bar, flat dx/dy/dz glyphs
+columns-panel | the columns panel open on the sample
+drawer | the filter drawer for LITO in ("SULPHIDE", "TRANSITION") and Cu_pct between 0.5 and 2
+calc-editor | the calculated-column editor: t = dx * dy * dz * density, its uses line and preview
+stats-cu | the statistics window of Cu_pct on the sample
+summary | the column summary (Σ stats) of the sample
+groupby | group by LITO, values Cu_pct and Au_gpt, weighted by density, run
+gt-report | grade–tonnage by LITO, Au_gpt in g/t, reported, with its curve
+gridsum | grid summary of the sample, summarized
+dq | data quality on a small codes.csv: leading zeros lost + a -999 sentinel
+export | the export dialog on the sample

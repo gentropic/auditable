@@ -1,2 +1,52 @@
-\chapter{C-functions}\label{tmp:C-functions}
-TODO
+\chapter{Expression functions}\label{app:functions}
+
+Every function of the expression language (\cref{ch:expr}), alphabetically. All of them give blank where
+an argument they need is blank or makes no sense, never an error.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily}p{0.36\linewidth}L@{}}
+\toprule
+\normalfont\sffamily\bfseries function & \sffamily\bfseries gives \\
+\midrule
+abs(x) & the absolute value \\
+bin(x, w), bin(x, w, origin) & the lower edge of the width-\code{w} band holding \code{x} \\
+ceil(x) & up to a whole number \\
+clamp(x, lo, hi) & \code{x} held between \code{lo} and \code{hi} \\
+coalesce(a, b, …) & the first argument that isn't blank \\
+concat(…) & the arguments joined as text, blanks left out \\
+day(s) & the day of a \code{YYYY-MM-DD} date \\
+exp(x) & $e^x$ \\
+floor(x) & down to a whole number \\
+if(cond, then, else) & \code{then} where \code{cond} is true, else \code{else} \\
+ifnum(x, default) & \code{x} if it is a number, else \code{default} \\
+int(x) & \code{x} without its fraction, towards zero \\
+interp(x, x1, y1, x2, y2, …) & piecewise-linear through the points, flat beyond them \\
+isblank(x) & whether \code{x} is blank \\
+isfilled(x) & whether it isn't \\
+isnan(x) & whether \code{x} is present but not a number \\
+isnum(x) & whether \code{x} reads as a number \\
+left(s, n) & the first \code{n} characters \\
+len(s) & the number of characters \\
+lerp(a, b, t) & $a + t(b-a)$ \\
+log(x) & the natural logarithm \\
+log10(x) & the base-10 logarithm \\
+lower(s) & in small letters \\
+max(…) & the greatest argument, blanks left out \\
+min(…) & the least argument, blanks left out \\
+mod(x, y) & the remainder, with the sign of \code{y} \\
+month(s) & the month of a \code{YYYY-MM-DD} date \\
+nullif(x, v) & blank where \code{x} equals \code{v}, else \code{x} \\
+pow(x, y) & $x^y$ \\
+remap(x, a1, b1, a2, b2) & \code{x} from the range \code{a1}–\code{b1} to \code{a2}–\code{b2} \\
+replace(s, find, with) & every \code{find} replaced, literally \\
+right(s, n) & the last \code{n} characters \\
+round(x), round(x, n) & to the nearest whole number, or \code{n} decimals; halves up \\
+smoothstep(a, b, x) & 0 below \code{a}, 1 above \code{b}, an S-curve between \\
+sqrt(x) & the square root \\
+substr(s, start), substr(s, start, n) & from position \code{start} (from 1), \code{n} characters \\
+trim(s) & without spaces at either end \\
+upper(s) & in capitals \\
+year(s) & the year of a \code{YYYY-MM-DD} date \\
+\bottomrule
+\end{tabularx}
+\end{center}

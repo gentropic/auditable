@@ -1,2 +1,90 @@
-\chapter{17-gridsum}\label{tmp:17-gridsum}
-TODO
+\chapter{Grid summary}\label{ch:gridsum}
+\begin{goals}
+\textbf{In this chapter} you find a block model's grid from its centroids: origin, block size and count
+on each axis, the order its rows are written in, sub-blocks, and how full it is.
+\end{goals}
+
+A block model's grid is rarely written down where you need it. \menu{Tools>Grid summary…} works it out
+from the coordinates in the file: the numbers you type into another package's dialog to load the model,
+and a check that the model is the regular grid it claims to be.
+
+\section{Running it}
+
+The window asks for the centroid columns \ui{X}, \ui{Y} and \ui{Z}, and optionally the block-size columns
+\ui{dx}, \ui{dy} and \ui{dz}. It fills them in from columns with those names. Click \ui{Summarize}:
+one pass over the view (only the filtered rows, with a filter on).
+
+\shot[0.7\linewidth]{gridsum}{Grid summary of the sample: a 60 × 50 × 40 grid of 10 × 10 × 5~m blocks,
+X varying fastest, and every cell filled.}
+
+\section{The result}\label{sec:gridsum-result}
+
+A table by axis:
+
+\begin{description}
+\item[\ui{origin}] the lowest block \emph{centroid} on the axis. Not the corner of the model: the corner is
+half a block below, origin minus half the block size. Datamine's \col{XMORIG} and most packages' model
+origins are corners.
+\item[\ui{block size}] the spacing of the centroids.
+\item[\ui{count}] the number of blocks along the axis, from the lowest centroid to the highest:
+$(\max - \min)/\mathrm{size} + 1$.
+\item[\ui{min}], \ui{max} the lowest and highest centroid.
+\end{description}
+
+and below it:
+
+\begin{description}
+\item[\ui{ordering}] which coordinate changes fastest from one row to the next and which slowest:
+\code{X fastest · Y · Z slowest} is a file written X within Y within Z.
+\item[\ui{parent cells}] the cells of the full grid, $n_x n_y n_z$.
+\item[\ui{parent block volume}] one block's volume.
+\item[\ui{rows scanned}] the rows read.
+\item[\ui{fill \%}] rows scanned over parent cells. 100\% is a full grid; less, a model that stores only
+some blocks (only the ore, only below topography); more than 100\%, a sub-blocked model or one with
+duplicate blocks, and the window says so.
+\item[\ui{X sub-blocks}] and so on, when an axis is sub-blocked: each sub-block size with the number of
+them in a parent, \code{2.5 (÷4)}.
+\end{description}
+
+Every number is shown as it is, without thousands separators or rounding, and clicking it copies it, so
+it pastes into another program's dialog box exactly. \ui{copy all} copies the whole summary.
+
+\section{How it is worked out}\label{sec:gridsum-method}
+
+For each axis, lamina collects the distinct centroid values, up to 200{,}000 of them, sorts them, and
+counts the gaps between neighbours (rounded to ten significant figures, so that float noise in an
+export doesn't count as a different gap).
+
+\begin{itemize}
+\item One gap size, or one that makes up more than 98\% of the gaps: that is the block size.
+\item Several sizes, where the largest is a whole multiple (2 or more) of the others: a sub-blocked axis,
+with the largest as the parent size and the others as sub-blocks.
+\item Otherwise, the most common gap.
+\end{itemize}
+
+Block-size columns, when you give them, take precedence over the gaps: one distinct value is the block
+size; several make the largest the parent and the rest its sub-blocks.
+
+The ordering comes from counting how often each coordinate changes between consecutive rows: the one
+that changes most often varies fastest.
+
+\section{When there is no grid}
+
+\ui{no regular grid detected} is an answer too: the coordinates don't sit on one consistent spacing,
+because the data are scattered (samples, not blocks), the model is rotated (its centroids aren't on
+an axis-aligned grid), or an export has gone wrong. The table then gives each axis's count of distinct
+values and its range.
+
+If an axis has more than 200{,}000 distinct values the window notes that the cap was reached; the
+inference uses the values it kept.
+
+\begin{tryit}
+From the sample to another package.
+\begin{enumerate}
+\item Open the sample and \menu{Tools>Grid summary…}, then \ui{Summarize}.
+\item Read the X origin, 620000, and the block size, 10: the model's corner in X is 619995.
+\item Click 620000 to copy it. Paste it anywhere: it is the number alone.
+\item Filter \code{LITO != "WASTE"} and summarise again. The grid now spans only the extent of the
+mineralised blocks, and since the waste between them is filtered out, the fill is below 100\%.
+\end{enumerate}
+\end{tryit}

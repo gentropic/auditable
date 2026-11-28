@@ -1,2 +1,103 @@
-\chapter{13-calc}\label{tmp:13-calc}
-TODO
+\chapter{Calculated columns}\label{ch:calc}
+\begin{goals}
+\textbf{In this chapter} you derive new columns from a formula, check them before adding them, manage
+them, and learn what they cost and where they go.
+\end{goals}
+
+A \term{calculated column} is a column lamina works out for each row from the row's other columns:
+\code{dx * dy * dz * density} for a block's tonnes, \code{if(Cu\_pct >= 0.3, "ore", "waste")} for a class,
+\code{bin(Z, 15)} for a bench. It is written in the expression language (\cref{ch:expr}), it is worked out
+as each row is read, and it is never written to your file. Once added it is a column like any other:
+the grid shows it, and filters, sorts, statistics, group by, grade–tonnage and export all use it.
+
+\section{Adding one}\label{sec:add-calc}
+
+Click \ui{ƒ+ col} on the toolbar, or choose \ui{Add calculated column…} on any column header's menu.
+The editor asks for two things:
+
+\begin{description}
+\item[\ui{Name}] a letter, then letters, digits, \code{\_} or \code{-}. It can't be the name of a
+column already in the table.
+\item[\ui{Expr}] the expression. It is coloured and completed as the filter box is
+(\cref{sec:filter-box}).
+\end{description}
+
+As you type, the editor checks the expression and says what it uses, \code{✓ uses: dx, dy, dz, density},
+or what is wrong with it, and previews its value on the first six rows of the file, so you can check the
+arithmetic on rows you can see. \ui{Add}, or \key{Enter} in the expression, adds the column; \key{Esc} or
+\ui{Cancel} closes the editor.
+
+\shot[0.6\linewidth]{calc-editor}{The calculated-column editor: a name, the expression, what it uses, and
+its value on the first six rows.}
+
+The new column appears at the right of the table, its header marked \ui{ƒ}.
+
+\begin{note}
+Avoid \code{-} in a name. It is allowed, but in an expression a hyphen is a minus, so a column called
+\col{cu-hi} has to be written \code{`cu-hi`} wherever it is used (\cref{sec:names}).
+\end{note}
+
+\subsection{The column's type}\label{sec:calc-type}
+
+lamina decides whether the new column holds numbers or text from its preview: a number column when every
+non-blank value in the first six rows is a number, a text column otherwise.
+
+\begin{caution}
+When the expression is blank on the file's first six rows, lamina has no numbers to go by and makes the
+column text, though it holds numbers further down. On the sample model, whose first rows are waste,
+\code{if(Cu\_pct >= 1, Cu\_pct, blank)} comes out as text. Filters still compare its values as numbers, but
+its distribution is a bar of top values, its statistics count values instead of averaging them, and
+grade–tonnage won't offer it as a grade. Right-click its header and choose \ui{Treat as number}.
+\end{caution}
+
+\section{Using another calculated column}
+
+An expression may use a calculated column added before it: add \col{tonnes} as \code{dx * dy * dz *
+density}, then \col{cu\_t} as \code{tonnes * Cu\_pct / 100}. Each row's values are worked out in the order
+the columns were added.
+
+\section{Editing and removing}\label{sec:calc-manager}
+
+A calculated column's header menu has \ui{Edit …} and \ui{Remove …}. \menu{Data>Calculated columns…}
+lists them all, with their expressions, to edit, remove or add from one place. Editing a column the
+filter or another column uses changes what they show; removing one they use leaves the filter or the
+column referring to a name that isn't there, which lamina reports as for any unknown column.
+
+\section{What they cost}\label{sec:calc-cost}
+
+A calculated column is worked out every time a row is read: on screen, and in every scan. The arithmetic
+itself is fast; what can cost is that it may need columns a scan otherwise wouldn't read. On a
+\file{.dm} or a Parquet file, a filter normally reads only the columns it names (\cref{sec:strided}). With
+any calculated column defined, it reads every column, because lamina doesn't follow which columns a
+filter reaches through a calculated one. On delimited text, which is read whole anyway, it makes no
+difference.
+
+\section{Where they go}\label{sec:calc-where}
+
+\begin{itemize}
+\item \textbf{Export} writes calculated columns as ordinary columns of values (\cref{ch:export}). A
+\file{.dm} with a calculated tonnes column exported to CSV gives a CSV with a real tonnes column.
+\item \textbf{A lens} keeps their names and expressions, and adds them to the next file it is applied to
+(\cref{ch:lens}).
+\item \textbf{Closing the view}, or lamina, drops them, as it drops the filter and the sort. They were
+never in the file.
+\end{itemize}
+
+\section{Bands to group by}\label{sec:bands}
+
+\code{bin} turns a number into the lower edge of its band, so a calculated column of it gives categories
+to group by: \code{bin(Z, 15)} for 15~m benches, \code{bin(Cu\_pct, 0.25)} for grade classes,
+\code{bin(Y, 100)} for 100~m slices north. Group by the band (\cref{ch:groupby}) and you get a table by
+bench, by class, by slice: a swath plot's numbers, without leaving the table.
+
+\begin{tryit}
+Tonnes and copper metal per bench.
+\begin{enumerate}
+\item In the sample, add \col{t} with \code{dx * dy * dz * density * ore\_pct}: the ore tonnes in each
+block. The preview shows 0 for the first rows, which are waste.
+\item Add \col{cu\_t} with \code{t * Cu\_pct / 100}: tonnes of copper.
+\item Add \col{bench} with \code{bin(Z, 20)}.
+\item Open \menu{Tools>Group by…}, group by \col{bench}, with values \col{t} and \col{cu\_t}. The table
+gives, per 20~m bench, the sum of each: ore tonnes and contained copper.
+\end{enumerate}
+\end{tryit}

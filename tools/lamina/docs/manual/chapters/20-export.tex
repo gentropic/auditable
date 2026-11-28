@@ -1,2 +1,85 @@
-\chapter{20-export}\label{tmp:20-export}
-TODO
+\chapter{Export}\label{ch:export}
+\begin{goals}
+\textbf{In this chapter} you write the part of a file you need to a new file: the filtered, sorted view,
+the columns you choose, calculated columns included, at any size.
+\end{goals}
+
+Export is how something leaves lamina. lamina never changes the file it opened, so to keep a filtered
+subset, a converted \file{.dm} or a table with derived columns, you write a new file.
+
+\section{The export dialog}\label{sec:export-dialog}
+
+\menu{Data>Export…} opens it.
+
+\shot[0.55\linewidth]{export}{The export dialog: the format, the header row, which rows, and which
+columns.}
+
+\begin{description}
+\item[\ui{Format}] \ui{CSV (comma)}, \ui{TSV (tab)}, \ui{semicolon} or \ui{pipe}. It starts on the open
+file's own delimiter when that is tab, and on comma otherwise. A TSV is named \file{.tsv}; the others
+\file{.csv}.
+\item[\ui{Header row}] write the column names as the first line.
+\item[\ui{Rows}] shown when a filter or a sort is on: \ui{Current view (filtered / sorted)} writes the
+rows you see, in the order you see them; \ui{All rows} writes the whole file in its own order.
+\item[\ui{Columns}] a checkbox per column, calculated columns among them, with a search box and
+\ui{all}, \ui{none} and \ui{invert}. Hidden columns start unticked; the count, \code{14 / 16}, says how
+many will be written.
+\end{description}
+
+\ui{Export} asks where to save the file, then writes it, with the progress in the dialog:
+\code{exporting… 42\% (1,204,000 rows)}. When it is done the dialog says \code{✓ 1,204,331 rows →
+model.csv} and closes. Closing the dialog during an export cancels it.
+
+\section{What is written}\label{sec:export-what}
+
+\begin{itemize}
+\item \textbf{Values as the file has them.} Text as it was read; numbers as the file wrote them for
+delimited text, so a decimal-comma file exports its numbers with commas (quoted, in a comma-delimited
+export). Number formats and colour scales are display only and aren't applied.
+\item \textbf{Calculated columns as values}: the export of a calculated column is an ordinary column of
+its results.
+\item \textbf{Columns in the file's order}, calculated columns after, whatever order the grid shows them
+in.
+\item \textbf{Quoting} only where needed: a field containing the delimiter, a double quote or a line
+break is put in double quotes, with its quotes doubled.
+\end{itemize}
+
+\begin{caution}
+A single-precision \file{.dm} currently exports its numbers with float noise in the last digits
+(\cref{sec:dm}).
+\end{caution}
+
+\section{Any size}\label{sec:export-size}
+
+The export reads the view and writes each row as it goes; it holds nothing whole. A filtered view without
+a sort is written in the file's own order, block by block, skipping blocks with no matches, which is fast;
+a sorted view is written in its sorted order, reading each row where it is.
+
+That needs a save dialog that writes as it goes, which Chrome and Edge have. Where the browser has none
+(Firefox), lamina builds the export in memory and downloads it, and stops with \code{too large for the
+download fallback} past about 256~million characters; export from Chrome or Edge for larger files. Inside
+the lead-acid shell on Android, an export streams into the phone's \file{Downloads} folder, and lamina
+offers to share it from there.
+
+\section{Converting}\label{sec:convert}
+
+Since an export reads any format lamina opens and writes delimited text, it is also a converter:
+
+\begin{itemize}
+\item \textbf{\file{.dm} to CSV}: open the \file{.dm}, export. Any size.
+\item \textbf{Parquet to CSV}: open the Parquet file, export.
+\item \textbf{A sheet to CSV}: open the workbook, pick the sheet, export.
+\item \textbf{Semicolon and decimal comma to comma and point}: not directly, since values are written as
+the file has them. Make calculated columns of the numeric columns (\code{FE * 1}), whose results are
+numbers, and export those.
+\end{itemize}
+
+\begin{tryit}
+Take the high-grade sulphide out of the sample.
+\begin{enumerate}
+\item Filter \code{LITO = "SULPHIDE" and Cu\_pct >= 1}, and sort by \col{Cu\_pct} descending.
+\item Open \menu{Data>Export…}. \ui{Rows} is \ui{Current view}. Click \ui{none}, then tick \col{X},
+\col{Y}, \col{Z}, \col{Cu\_pct} and \col{Au\_gpt}.
+\item Click \ui{Export} and save. The file has those five columns, the richest block first.
+\end{enumerate}
+\end{tryit}

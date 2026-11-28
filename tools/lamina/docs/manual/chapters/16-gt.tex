@@ -1,2 +1,169 @@
-\chapter{16-gt}\label{tmp:16-gt}
-TODO
+\chapter{Grade–tonnage}\label{ch:gt}
+\begin{goals}
+\textbf{In this chapter} you report a block model's tonnes, grade and contained metal by domain, and its
+grade–tonnage curve, straight from the file, and learn exactly what is summed.
+\end{goals}
+
+\menu{Tools>Grade–tonnage…} is the resource view of a block model: how many tonnes there are, at what
+grade, holding how much metal, by domain and above each cutoff. It reads the model as it is, with no
+import and no conversion, and respects the filter, so it reports a pit shell, a bench or a domain as
+readily as the whole model.
+
+\section{What a block weighs}\label{sec:gt-weight}
+
+The report needs one number per block: its tonnes. lamina works it out as
+\[
+t_i = V_i \times \rho_i \times p_i ,
+\]
+the block's volume, its density and its ore proportion. Each is an expression (\cref{ch:expr}), so each can
+be a column (\code{density}), a number (\code{2.7}), or a formula (\code{dx * dy * dz},
+\code{interp(Fe\_pct, 20, 2.7, 65, 4.3)}). A factor left blank counts as 1.
+
+When the window opens, lamina fills them in from the column names it recognises:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries factor & \sffamily\bfseries filled in with \\
+\midrule
+\ui{Volume} & \code{dx * dy * dz} when there are columns named \col{dx}, \col{dy} and \col{dz}; else a
+column whose name contains \code{vol}; else 1 \\
+\ui{Density} & a column whose name contains \code{dens}, or is \col{SG}; else 2.7 \\
+\ui{Ore proportion} & a column named like \col{ore}, \col{prop} or \col{ore\_pct}; else 1 \\
+\ui{Group by} & the first text column; or \ui{— whole deposit —} \\
+\ui{Grade} & the first number column that isn't an identifier, a coordinate or a block size \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Check them: a guess from a name is only a guess.
+
+\subsection{Density units}\label{sec:gt-density-unit}
+
+Beside \ui{Density} is its unit: \ui{t/m³ (=g/cm³)}, the default, \ui{kg/m³} or \ui{lb/ft³}. lamina converts
+to t/m³ before multiplying, so a density column in kg/m³ (2650 rather than 2.65) doesn't make the model a
+thousand times heavier. The formula line under the report shows the conversion when there is one:
+\code{[kg/m³ → t/m³]}.
+
+\subsection{Grades and their units}\label{sec:gt-grade-unit}
+
+Each \ui{Grade} has a unit: \ui{\%}, \ui{g/t}, \ui{ppm}, \ui{oz/t} (troy ounces per short ton), or none.
+\ui{+ add grade} adds another grade to report; \ui{✕} removes one. With a unit, the report labels the
+grade and gives contained metal in tonnes. Without one, metal is reported as tonnes times grade, in
+whatever the grade's unit is, and the column is headed \ui{Au\_gpt·t}.
+
+\section{The report}\label{sec:gt-report}
+
+Click \ui{Report}. One pass over the view gives, per group and in total:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries column & \sffamily\bfseries is \\
+\midrule
+\ui{blocks} & the blocks with tonnes greater than zero \\
+\ui{tonnes} & $T = \sum t_i$ \\
+the grade & the tonnage-weighted mean, $\bar{g} = \sum t_i g_i \,/\, \sum t_i$ over the blocks that have a
+grade \\
+metal & $M = \sum t_i\,g_i$, times the unit's fraction when the grade has a unit (0.01 for \%,
+$10^{-6}$ for g/t and ppm) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\shot{gt-report}{Grade–tonnage on the sample, by lithology: tonnes, the tonnage-weighted grade and the
+metal per domain, and below it the cutoff curve and table for \col{Au\_gpt}.}
+
+Click a column heading to sort the groups by it. \ui{copy all} copies the report.
+
+\subsection{What is left out, and why it matters}\label{sec:gt-left-out}
+
+\begin{itemize}
+\item \textbf{Blocks with no tonnes} ($t_i \le 0$, or blank because a factor is blank) are left out
+entirely: they have no mass. On the sample, the 2{,}391 waste blocks with an ore proportion of 0 are not
+in the WASTE row, which counts 55{,}400 blocks where group by counts 57{,}791.
+\item \textbf{Blocks with tonnes but no grade} count in \ui{tonnes} and not in the grade's mean or metal.
+So when some grades are blank, metal is $\bar{g}$ times the tonnes \emph{with} a grade, which is less
+than $\bar{g} \times T$.
+\end{itemize}
+
+\begin{caution}
+That second rule is deliberate (a missing grade is not a zero grade, \cref{sec:blanks}), but it means a
+report over blocks with blank grades has two tonnages in it: the one in the \ui{tonnes} column, and the
+one the grade and metal refer to. If the blank grades are unestimated blocks that should be out of the
+report, filter them out first: \code{Au\_gpt is filled}.
+\end{caution}
+
+\section{The cutoff curve}\label{sec:gt-curve}
+
+Below the report, each grade gets its grade–tonnage curve over the whole view (not per group): the
+tonnes at or above each cutoff, falling as the cutoff rises, and the mean grade of those tonnes, rising.
+Under it, a table at round cutoffs:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries column & \sffamily\bfseries is, for cutoff $c$ \\
+\midrule
+\ui{tonnes ≥} & $T(c) = \sum_{g_i \ge c} t_i$ \\
+the grade & $\bar{g}(c) = \sum_{g_i \ge c} t_i g_i \,/\, T(c)$ \\
+metal & $\bar{g}(c)\,T(c)$, in the grade's unit as above \\
+\ui{\% of tonnes} & $T(c)$ as a share of $T(0)$ \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The curve is computed in a second pass, with the block grades put in bins of a round width (1, 2, 2.5 or
+5 times a power of ten, chosen to give at most about 150 bins) from zero (or from the lowest grade, if some are negative) to
+the highest. The table's automatic cutoffs are bin edges, about eight of them, so its figures are exact,
+not read off the curve; rows past the last tonnes are dropped.
+
+\subsection{Your own cutoffs}\label{sec:gt-cutoffs}
+
+Type cutoffs in the box beside a grade, separated by commas, \code{0.3, 0.5, 1, 2}, and click
+\ui{Report}. The table then gives exactly those cutoffs, each accumulated exactly, every block with a grade
+at or above it, not snapped to a bin. Leave the box empty for the automatic ones.
+
+\subsection{Fixing the plot's ranges}\label{sec:gt-ranges}
+
+The box after the cutoffs fixes the plot's axes, so this month's curve can be laid over last month's at
+the same scale. It takes up to three settings, separated by spaces:
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily}lL@{}}
+\toprule
+\normalfont\sffamily\bfseries write & \sffamily\bfseries fixes \\
+\midrule
+x:0..2 & the cutoff axis, from 0 to 2 \\
+t:5e6 & the tonnes axis, up to 5 million (\code{t:1e6..5e6} for both ends) \\
+g:3 & the grade axis, up to 3 (\code{g:1..3} for both ends) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+An empty box, or a setting left out, is automatic.
+
+\subsection{Taking it away}
+
+Above each curve, \ui{copy} copies its table as tab-separated text, \ui{copy png} puts the chart on the
+clipboard as a picture, and \ui{save png} saves it as an image file. Neither touches the network: the
+picture is drawn in the page.
+
+\section{Grade–tonnage in a lens}
+
+A lens keeps the grade–tonnage setup: the factors, their units, the group, and each grade with its unit,
+cutoffs and ranges (\cref{ch:lens}). Applied to next month's model, it opens grade–tonnage set up as it
+was, and \ui{Report} gives the same report on the new numbers.
+
+\begin{tryit}
+The sample's resource above 0.5~g/t gold.
+\begin{enumerate}
+\item Open the sample and \menu{Tools>Grade–tonnage…}. The factors read \code{dx * dy * dz},
+\code{density} and \code{ore\_pct}; the group \col{LITO}; the grade \col{Au\_gpt}. Set its unit to
+\ui{g/t}.
+\item Type \code{0.5, 1, 2} as the cutoffs and click \ui{Report}. The total is about 20.3 million tonnes,
+by lithology above, with the curve and the three cutoffs below.
+\item Add a grade, \col{Cu\_pct}, unit \ui{\%}, and report again: copper metal in tonnes beside the gold.
+\item Close the window, filter \code{Z >= 500}, and report again: the upper half of the model only.
+\end{enumerate}
+\end{tryit}

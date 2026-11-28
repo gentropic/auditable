@@ -1,2 +1,29 @@
-\chapter{D-limits}\label{tmp:D-limits}
-TODO
+\chapter{Limits}\label{app:limits}
+
+The numbers lamina works within, and what happens at each. Most come from keeping something per row in
+memory; filtering first moves every one of them out of the way (\cref{sec:huge-limits}).
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\raggedright\arraybackslash}p{0.36\linewidth}rL@{}}
+\toprule
+\sffamily\bfseries limit & \sffamily\bfseries value & \sffamily\bfseries at the limit \\
+\midrule
+file size, delimited text, \file{.dm}, Parquet & none & windowed: indexed in one pass \\
+matches a filter keeps & 16{,}777{,}216 & \code{too many matches — refine the filter}; the view stays as it was \\
+rows a sort orders & 5{,}242{,}880 & \code{too many rows to sort — filter first}; the view is shown unsorted \\
+values kept for exact quantiles & 5{,}242{,}880 & the quantiles aren't given; every other statistic is \\
+distinct values counted (statistics, text) & 100{,}000 & the count shows \ui{+} \\
+groups (group by, grade–tonnage) & 1{,}000 & further groups only in the total; marked truncated \\
+distinct coordinates per axis (grid summary) & 200{,}000 & inference uses those kept; noted \\
+workbook (\file{.xlsx}) & 32~MB & \code{workbook too large}; save the sheet as CSV \\
+\file{.zst}, \file{.bz2}, \file{.xz}, \file{.tar} & 32~MB & \code{archive too large} \\
+\file{.gz}, \file{.zip} & none & above 32~MB, read through the tape (\cref{sec:tape}) \\
+export without a streaming save dialog & 256~M characters & \code{too large for the download fallback} \\
+the sample behind distributions, data quality, clipping & 8{,}192 rows & \\
+the selection line & 50{,}000 cells & computed over the first 50{,}000 \\
+records per index block & 4{,}096 & \\
+blocks kept decoded & 16 & \\
+recent files & 12 & the oldest drops off \\
+\bottomrule
+\end{tabularx}
+\end{center}

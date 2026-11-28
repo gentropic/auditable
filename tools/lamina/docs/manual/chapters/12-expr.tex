@@ -1,2 +1,300 @@
-\chapter{12-expr}\label{tmp:12-expr}
-TODO
+\chapter{The expression language}\label{ch:expr}
+\begin{goals}
+\textbf{In this chapter} you get the full language lamina's filters, calculated columns and grade–tonnage
+factors are written in: names, values, operators, the rules for blank values, and every function.
+\end{goals}
+
+One language does three jobs in lamina. In the filter box an expression is a condition, true or false
+for each row. In a calculated column it is a value: a number or a text. In grade–tonnage it gives the
+volume, density or ore proportion of each block. The language is the same in all three, and it is the
+same one micro uses.
+
+It looks like the \code{WHERE} clause of SQL, because that is what people who work with tables already
+read:
+
+\begin{codeblock}
+LITO in ("SULPHIDE", "TRANSITION") and Cu_pct between 0.5 and 2
+\end{codeblock}
+
+Two properties matter before any detail. An expression is always about one row: it can use any column
+of that row, and nothing outside it (no previous row, no total). And an expression never fails while it
+runs: arithmetic that has no answer (a division by zero, the square root of a negative number) gives a
+blank value, not an error, so a filter over ten million rows can't stop at row six million because one
+value was odd (\cref{sec:totality}).
+
+\section{Names and values}\label{sec:names}
+
+\subsection{Columns}
+
+A word is a column name: \code{Cu\_pct}, \code{LITO}, \code{dx}. Names are matched without regard to
+case, so \code{cu\_pct} and \code{CU\_PCT} are the same column. A plain name is letters, digits and
+underscores, not starting with a digit.
+
+Any other name goes between backticks:
+
+\begin{codeblock}
+`Cu (ppm)` > 30
+`OK-Indic` = 1
+`in` = "yes"
+\end{codeblock}
+
+That covers spaces, brackets, hyphens and names that are also keywords. Two other forms are read too:
+\code{\$\{site\_id\}}, the reference form of XLSForm, for names made of letters, digits, \code{\_},
+\code{.} and \code{-} (so \code{\$\{1st\_pass\}} and \code{\$\{fe-pct\}} work); and \code{["Cu (ppm)"]},
+an older form lamina's lenses may still hold.
+
+\begin{caution}
+A hyphen between two words is always a minus: \code{OK-Indic} is the column \col{OK} minus the column
+\col{Indic}. When a column really is called \col{OK-Indic}, lamina's error says so and suggests the
+backticked form.
+\end{caution}
+
+\subsection{Values}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries write & \sffamily\bfseries for \\
+\midrule
+\code{42}, \code{3.14}, \code{.5}, \code{1.5e-3} & numbers \\
+\code{"OXIDE"}, \code{'OXIDE'} & text (double quotes are the usual form) \\
+\code{true}, \code{false} & the two truth values \\
+\code{blank} & a missing value (\cref{sec:blanks}) \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A word without quotes is a column; a word in quotes is text. So \code{fe > cu} compares two columns, and
+\code{LITO = "OXIDE"} compares a column with a text. This is the one rule that trips people coming from a
+spreadsheet: \code{LITO = OXIDE} looks for a column called OXIDE.
+
+\subsection{Text that looks like a number}
+
+A text value that reads as a number compares as a number: \code{"10" < "9"} is false, and a column
+whose cells hold \code{12} as text equals \code{12}. Text that isn't a number compares as text, letter by
+letter, with capitals before small letters (\code{"abc" < "abd"} is true). A file read with a decimal
+comma (\cref{sec:decimal-comma}) reads \code{1,5} in its cells as 1.5 here too.
+
+\section{Operators}\label{sec:operators}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries operator & \sffamily\bfseries meaning \\
+\midrule
+\code{+ - * /} & arithmetic; unary minus \\
+\code{\textasciicircum{}} or \code{**} & power; \code{2\textasciicircum{}3\textasciicircum{}2} is $2^{(3^2)} = 512$ and \code{-2\textasciicircum{}2} is $-4$ \\
+\code{= != < <= > >=} & comparison \\
+\code{between} … \code{and} … & a range, ends included: \code{Z between 400 and 500} \\
+\code{in (…)}, \code{not in (…)} & one of a set: \code{LITO in ("OXIDE", "SULPHIDE")} \\
+\code{contains}, \code{not contains} & text containing other text \\
+\code{like}, \code{not like} & text matching a pattern with \code{\%} and \code{\_} \\
+\code{matches} & text matching a regular expression \\
+\code{is blank}, \code{is filled}, \code{is not blank} & whether a value is missing \\
+\code{and}, \code{or}, \code{not} & combining conditions \\
+\code{( )} & grouping \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+From tightest to loosest: the power; unary minus; \code{* /}; \code{+ -}; the comparisons and the
+\code{between}, \code{in}, \code{contains}, \code{like}, \code{matches} and \code{is} tests; \code{not};
+\code{and}; \code{or}. So \code{a or b and c} is \code{a or (b and c)}, \code{not Z > 500} is
+\code{not (Z > 500)}, and \code{2 * 3\textasciicircum{}2} is 18. Comparisons don't chain:
+\code{400 < Z < 500} is an error; write \code{Z between 400 and 500}. When in doubt, add brackets: they
+cost nothing.
+
+\subsection{Other spellings}
+
+The C and spreadsheet spellings are read too, so habits from elsewhere work: \code{==} for \code{=},
+\code{<>} for \code{!=}, \code{\&\&} and \code{||} for \code{and} and \code{or}, \code{\textasciitilde{}} and
+\code{!\textasciitilde{}} for \code{contains} and \code{not contains}, single quotes for text, and \code{in "a", "b"}
+without brackets. lamina itself writes \code{==} when it builds a filter from a cell
+(\cref{sec:filter-from-grid}). Words (\code{and}, \code{between}, \code{blank}) may be in any case.
+
+\subsection{Matching text}\label{sec:text-match}
+
+\code{contains}, \code{like} and \code{matches} are case-sensitive: \code{LITO contains "XID"} is true
+for OXIDE, \code{LITO contains "xid"} isn't. To ignore case, change it first:
+\code{upper(LITO) contains "XID"}.
+
+\code{like} takes \code{\%} for any run of characters and \code{\_} for one: \code{HOLE like "DDH\%"},
+\code{HOLE like "DDH-01\_"}. \code{matches} takes a regular expression: \code{HOLE matches "\textasciicircum{}DDH-0[0-9]+\$"}.
+There is no \code{not matches}; write \code{not (HOLE matches "…")}.
+
+A regular expression that could take an astronomical time on some text is refused when you type it,
+rather than allowed to freeze the window. These are patterns with a repeated group that itself
+contains a repetition or an alternative: \code{(a+)+}, \code{(x|xx)+}, \code{(a|b)*}, and
+back-references. Rewrite without the nesting: \code{[ab]*} for \code{(a|b)*}.
+
+\section{Blank values}\label{sec:blanks}
+
+A cell can be empty, and many files mark a missing value some other way that lamina reads as empty: a
+Datamine absent value (\cref{sec:dm}), a missing Parquet value. In an expression these are
+\term{blank}. How blanks behave is the most important rule in the language, because a missing grade
+that quietly became zero would pull every mean and every tonnage down with it.
+
+\begin{description}
+\item[Blank goes through arithmetic.] \code{Cu\_pct * 2} is blank where \col{Cu\_pct} is blank, and so
+is \code{Cu\_pct + 1} and \code{Cu\_pct * 0}. A blank never turns into zero by itself.
+\item[You turn it into a value on purpose.] \code{coalesce(Cu\_pct, 0)} is \col{Cu\_pct}, or 0 where it
+is blank; \code{ifnum(x, 0)} is \code{x} where \code{x} is a number and 0 otherwise. These, with
+\code{if}, are the only ways a blank becomes a value.
+\item[A blank never satisfies an order.] \code{Cu\_pct > 1} and \code{Cu\_pct <= 1} are both false where
+\col{Cu\_pct} is blank: a missing grade is neither high nor low.
+\item[Equality is friendly.] \code{x = blank} is true where \code{x} is blank, \code{blank = blank} is
+true, and \code{Cu\_pct = 0} is false and \code{Cu\_pct != 0} true where it is blank. There is no SQL
+trap where \code{= NULL} matches nothing. \code{x is blank} is the clearer spelling.
+\item[\code{not} is the complement.] \code{not (Cu\_pct > 1)} is true where \col{Cu\_pct} is blank. A
+filter and \code{not} of it always split the rows between them, blanks included; in SQL the blanks fall
+out of both.
+\end{description}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily}lcL@{}}
+\toprule
+\normalfont\sffamily\bfseries where Cu\_pct is blank & \sffamily\bfseries gives & \\
+\midrule
+Cu\_pct > 1 & false & a blank satisfies no order \\
+not (Cu\_pct > 1) & true & the complement takes it \\
+Cu\_pct <= 1 & false & so \code{not (x > 1)} is not \code{x <= 1} on blanks \\
+Cu\_pct = blank & true & \\
+Cu\_pct != 0 & true & \\
+Cu\_pct * 2 & blank & \\
+coalesce(Cu\_pct, 0) & 0 & \\
+if(Cu\_pct > 1, 1, 0) & 0 & a condition that isn't true takes the \code{else} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\code{and} and \code{or} are strict about truth: they take \code{true} as true and everything else,
+blanks and numbers included, as false. \code{Cu\_pct and true} is false even where \col{Cu\_pct} is 2.5.
+Write the comparison you mean: \code{Cu\_pct > 0 and …}.
+
+An empty text and a blank are the same thing: a function whose result is an empty text gives blank.
+
+\section{Functions}\label{sec:functions}
+
+Every function gives a blank when an argument it needs is blank or makes no sense, rather than an error.
+\Cref{app:functions} lists them all alphabetically; here they are by use.
+
+\subsection{Choosing}
+
+\begin{description}
+\item[\code{if(cond, then, else)}] \code{then} where \code{cond} is true, \code{else} otherwise:
+\code{if(Cu\_pct >= 0.3, "ore", "waste")}. With \code{blank} as a branch it scrubs a value:
+\code{if(AU = -99, blank, AU)}.
+\item[\code{coalesce(a, b, …)}] the first that isn't blank.
+\item[\code{ifnum(x, default)}] \code{x} if it is a number, else \code{default}.
+\item[\code{nullif(x, v)}] blank where \code{x} equals \code{v}: \code{nullif(AU, -999)} removes the
+$-999$ missing-value code.
+\end{description}
+
+\subsection{Numbers}
+
+\begin{description}
+\item[\code{round(x)}, \code{round(x, n)}] to the nearest whole number, or to \code{n} decimals; a half
+rounds up, towards $+\infty$ (\code{round(2.5)} is 3, \code{round(-2.5)} is $-2$). Numbers are binary
+floating point, so a value like 1.005 is stored a hair below itself and \code{round(1.005, 2)} is 1.
+\item[\code{int(x)}] drops the fraction, towards zero: \code{int(-2.7)} is $-2$.
+\item[\code{floor(x)}, \code{ceil(x)}] down and up to a whole number.
+\item[\code{abs(x)}] the absolute value.
+\item[\code{mod(x, y)}] the remainder, with the sign of \code{y}, as in Excel: \code{mod(-7, 3)} is 2;
+\code{mod(x, 0)} is blank.
+\item[\code{sqrt}, \code{exp}, \code{log}, \code{log10}, \code{pow(x, y)}] \code{log} is the natural
+logarithm, \code{log10} the base-10 one geochemists log grades with. \code{log(0)}, \code{sqrt(-1)} and
+the like are blank.
+\item[\code{min(…)}, \code{max(…)}] the least and greatest of their arguments, leaving blanks out:
+\code{max(3, Cu\_pct)} is 3 where \col{Cu\_pct} is blank.
+\item[\code{clamp(x, lo, hi)}] \code{x}, held between \code{lo} and \code{hi}.
+\item[\code{bin(x, w)}, \code{bin(x, w, origin)}] the lower edge of the band of width \code{w} that
+holds \code{x}: \code{bin(7.3, 2)} is 6, \code{bin(-1, 2)} is $-2$, and with an origin,
+\code{bin(7.3, 2, 1)} is 7. As a calculated column it gives benches, elevation bands and grade classes to
+group by (\cref{sec:bands}).
+\end{description}
+
+\subsection{Interpolation}
+
+\begin{description}
+\item[\code{lerp(a, b, t)}] the value a fraction \code{t} of the way from \code{a} to \code{b}.
+\item[\code{remap(x, a1, b1, a2, b2)}] \code{x} taken from the range \code{a1}–\code{b1} to the range
+\code{a2}–\code{b2}: \code{remap(5, 0, 10, 100, 200)} is 150. Blank when \code{a1} equals \code{b1}.
+\item[\code{interp(x, x1, y1, x2, y2, …)}] a piecewise-linear curve through the points, flat beyond the
+first and last: \code{interp(Fe\_pct, 20, 2.7, 45, 3.4, 65, 4.3)} is a density from an iron grade,
+without a ladder of \code{if}s. Written as numbers, the \code{x}s must increase, or the expression is
+refused as a likely typo; the points are a list of pairs, so the count of arguments after \code{x} must
+be even.
+\item[\code{smoothstep(a, b, x)}] 0 below \code{a}, 1 above \code{b}, an S-curve between.
+\end{description}
+
+\code{lerp} and \code{remap} don't hold their result inside the range; wrap them in \code{clamp} for
+that.
+
+\subsection{Text}
+
+\begin{description}
+\item[\code{upper}, \code{lower}, \code{trim}] case, and spaces at either end.
+\item[\code{len(s)}] the number of characters; blank for a blank.
+\item[\code{left(s, n)}, \code{right(s, n)}] the first or last \code{n} characters.
+\item[\code{substr(s, start)}, \code{substr(s, start, n)}] from position \code{start}, counting from 1:
+\code{substr("DDH-012", 5, 3)} is \code{012}.
+\item[\code{replace(s, find, with)}] every occurrence, taken literally.
+\item[\code{concat(…)}] joined, leaving blanks out, numbers written as text:
+\code{concat("DDH-", 23)} is \code{DDH-23}.
+\end{description}
+
+\code{upper(trim(HOLEID))} is the usual way to make hole names written by different people agree.
+
+\subsection{Dates}
+
+\code{year(s)}, \code{month(s)}, \code{day(s)} take a date written \code{YYYY-MM-DD} (as text; lamina has
+no date type) and give its parts.
+
+\subsection{Tests}
+
+\code{isnum(x)} is true where \code{x} reads as a number (\code{"1e3"} and \code{" 12 "} do);
+\code{isnan(x)} where it is present but isn't a number; \code{isblank(x)} and \code{isfilled(x)} where
+it is missing or not. As filters they find the junk in a numeric column: \code{isnan(Cu\_pct)} lists the
+rows where \col{Cu\_pct} holds something like \code{<0.01} or \code{n/a}.
+
+\section{Long expressions}\label{sec:comments}
+
+An expression can run over several lines, and \code{\#} starts a comment that runs to the end of its
+line. In the filter box and the calculated-column editor, that lets a long condition be laid out and
+explained:
+
+\begin{codeblock}
+LITO in ("SULPHIDE", "TRANSITION")   # the fresh rock
+and Cu_pct >= 0.3                    # the reporting cutoff
+and Z between 400 and 520            # above the 2030 pit floor
+\end{codeblock}
+
+\section{It never fails as it runs}\label{sec:totality}
+
+An expression that is read correctly runs to the end on every row. Division by zero, the logarithm of a
+negative, text where a number was wanted: each gives a blank for that row, and the scan goes on. Mistakes
+are caught when you type the expression, not millions of rows into a scan: an unknown column, a
+missing bracket, a function given the wrong number of arguments (\code{round() expects 1–2 argument(s),
+got 0}), an \code{interp} whose points are out of order, a dangerous regular expression.
+
+\begin{why}
+This is what makes an expression safe to receive from someone else: in a lens, from a colleague, from a
+script. It can't loop, can't stop with an error halfway, can't reach anything outside the row, and lamina
+runs it without turning it into program code (\cref{sec:no-eval}). The worst a strange expression can do
+is give blanks.
+\end{why}
+
+\begin{tryit}
+Blanks, on purpose.
+\begin{enumerate}
+\item In the sample, add a calculated column (\ui{ƒ+ col}) called \col{cu\_hi} with the expression
+\code{if(Cu\_pct >= 1, Cu\_pct, blank)}.
+\item Filter \code{cu\_hi is blank}. These are the blocks under 1\%: most of the model.
+\item Change the filter to \code{not (cu\_hi > 2)}. The blocks between 1 and 2\% and every blank: the
+complement of \code{cu\_hi > 2}.
+\item Clear the filter. Right-click the \col{cu\_hi} header: if it offers \ui{Treat as number}, choose it
+(lamina guessed the new column's type from rows that were all blank, \cref{sec:calc-type}). Then choose
+\ui{Statistics — cu\_hi…}: the blanks are counted as blanks, and the mean is the mean of the blocks at or
+above 1\% only.
+\end{enumerate}
+\end{tryit}

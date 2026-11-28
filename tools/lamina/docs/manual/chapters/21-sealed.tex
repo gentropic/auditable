@@ -1,2 +1,106 @@
-\chapter{21-sealed}\label{tmp:21-sealed}
-TODO
+\chapter{Sealed}\label{ch:sealed}
+\begin{goals}
+\textbf{In this chapter} you learn what it means that lamina is Sealed, what it keeps on your machine,
+and how to verify a copy of lamina before you trust it with data that mustn't leave your machine.
+\end{goals}
+
+A resource model, an assay database or a reconciliation is often data that must not leave the company,
+and sometimes must not leave the machine. lamina is built so that it can't send it anywhere, and so that
+you can check that, rather than take it on trust.
+
+\section{No network}\label{sec:no-network}
+
+The lamina page carries a \term{Content Security Policy}: rules the browser enforces on the page,
+whatever its code tries to do. lamina's is
+
+\begin{codeblock}
+default-src 'none'; script-src 'self' 'unsafe-inline' blob:;
+style-src 'unsafe-inline'; img-src data:; worker-src 'self' blob:;
+child-src 'self' blob:; manifest-src 'self'; connect-src 'none';
+base-uri 'none'; form-action 'none'
+\end{codeblock}
+
+The rule that matters is \code{connect-src 'none'}: the page may open no connection of any kind. No
+request, no upload, no WebSocket, no beacon. It isn't that lamina chooses not to; the browser refuses.
+And with \code{default-src 'none'} and no remote origin anywhere in the policy, the page can't load a
+script, a style, a font or an image from anywhere either: everything it runs is in the file.
+
+You can see it refused. Open lamina, open the browser's developer console (\key{F12}), and type
+\code{fetch(location.href)}. The request is blocked, and the console says the Content Security Policy
+blocked it.
+
+\begin{note}
+Links in \menu{Help} (\ui{Manual — the full documentation ↗}) and on the empty screen open a web page in
+a new tab. That is you going to a page, not lamina sending anything: the new tab is a separate page, with
+nothing of lamina's in it.
+\end{note}
+
+\section{No code made on the fly, no WebAssembly}\label{sec:no-eval}\label{sec:no-wasm}
+
+The policy also grants neither \code{'unsafe-eval'} nor \code{'wasm-unsafe-eval'}. lamina never turns text
+into code (an expression is read by an interpreter, \cref{sec:totality}), and it runs no WebAssembly: every
+format it opens, the archives included, is decoded by JavaScript that is in the file and can be read
+there. That is why lamina reads Snappy, gzip and Zstandard Parquet but not LZ4 or Brotli
+(\cref{sec:parquet}): the decoders available for those are WebAssembly.
+
+The third-party decoders it carries are fflate (zip and gzip), fzstd (Zstandard) and hyparquet (Parquet),
+all under the MIT licence; xz and bzip2 are GCU's own. lamina itself is MIT.
+
+\section{What stays on the machine}\label{sec:sealed-local}
+
+lamina keeps a file's block index and the recent-files list in the browser's storage for the page
+(\cref{sec:local-state}). They stay on this machine, since nothing can be sent. The index holds where
+rows start, not what they hold. Reopening a recent file asks the browser for permission each time; lamina
+never re-reads a file silently. Turn recents off on a shared machine.
+
+\section{The installed app}
+
+The copy at \file{gentropic.org/lamina}, installed or from the Microsoft Store, is the same sealed page
+inside a small installable shell, with a \term{service worker}: the part of an installed web app that
+keeps it working offline. The service worker isn't bound by the page's policy, and does two things: it
+keeps a copy of lamina's own files, and it checks the same address for a newer version. It never sees
+your data, which stays in the page.
+
+For a lamina that provably makes no network request at all, use the file itself: \file{lamina.html},
+downloaded, opened from the disk (\cref{sec:single-file}). It has no service worker.
+
+\section{Verifying a copy}\label{sec:verify}
+
+Every published lamina comes with a \term{capability declaration} at \file{gentropic.org/security}, and
+the build that makes lamina checks it against the file before releasing it:
+
+\begin{description}
+\item[\file{sha256.txt}] the SHA-256 of the exact \file{lamina.html}. On your copy,
+\code{shasum -a 256 lamina.html} (or \code{certutil -hashfile lamina.html SHA256} on Windows) must give the
+same value.
+\item[\file{capability.json}] what lamina is declared to do and not do: the profile, Sealed; no network,
+no code generation, no WebAssembly, no remote import; files read only when you open them, written only
+when you export.
+\item[\file{csp.txt}] the policy above, taken from the file itself, so that the documentation can't
+drift from what the file says.
+\item[\file{sbom.json}] the software bill of materials: what lamina is built from.
+\end{description}
+
+The build derives all of these from the file and stops if a claim is false: a remote import, a missing
+rule, or a network request when the file is opened (a test opens the built file in a browser and records
+every request it tries). A lamina that isn't Sealed can't be released as one.
+
+The build stamp at the bottom right of the window, \code{0.1.0 · b31bbe3 · 2026-11-27}, identifies the
+copy at a glance: version, a hash of lamina's code, and the build date. Two copies with the same stamp are
+the same lamina; the SHA-256 is the full check.
+
+\section{Inside another page}
+
+A page that embeds lamina in a frame (\cref{app:host}) can read everything lamina shows, and has whatever
+network access its own policy gives it. Inside such a page, lamina is only as sealed as the page. The
+Sealed claim belongs to \file{lamina.html} opened on its own.
+
+\begin{tryit}
+Check your own copy.
+\begin{enumerate}
+\item Download \file{lamina.html} from the empty screen.
+\item Compute its SHA-256 and compare it with \file{gentropic.org/security}.
+\item Open it from the disk, press \key{F12}, and run \code{fetch("https://example.com")} in the console.
+The policy refuses it.
+\end{enumerate}
+\end{tryit}

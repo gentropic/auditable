@@ -1,2 +1,81 @@
-\chapter{15-groupby}\label{tmp:15-groupby}
-TODO
+\chapter{Group by}\label{ch:groupby}
+\begin{goals}
+\textbf{In this chapter} you summarise value columns per group (per lithology, per domain, per bench),
+with a weighted mean beside the plain one.
+\end{goals}
+
+\menu{Tools>Group by…} answers ``what does each group look like?'': for every distinct value of one
+column, statistics of the others.
+
+\section{Setting it up}\label{sec:groupby-setup}
+
+\begin{description}
+\item[\ui{Group by}] the column whose values make the groups. Usually a category (\col{LITO},
+\col{ZONE}, a domain code), but any column will do: a number column gives one group per distinct number,
+which is what a banded calculated column is for (\cref{sec:bands}).
+\item[\ui{Value}] a number column to summarise. \ui{+ add variable} adds another; \ui{✕} removes one.
+\item[\ui{Weight by}] optionally, a number column to weight the values by: the sample length for
+assays, the tonnes for blocks.
+\end{description}
+
+Click \ui{Group}. lamina scans the view once (with a filter on, only its rows; the title says
+\ui{(filtered)}) and fills the table.
+
+\shot{groupby}{Group by \col{LITO} on the sample, values \col{Cu\_pct} and \col{Au\_gpt}, weighted by
+\col{density}: each value's sum, mean, weighted mean, standard deviation, minimum and maximum, per
+lithology, and the total.}
+
+\section{Reading the table}\label{sec:groupby-table}
+
+One row per group and a \ui{Σ total} row for all of them. For each value column: \ui{sum}, \ui{mean},
+\ui{std} (the sample standard deviation), \ui{min} and \ui{max}, and with a weight, \ui{wmean}, the
+weighted mean
+\[
+\bar{x}_w = \frac{\sum w_i x_i}{\sum w_i}
+\]
+over the rows with both a value and a weight. \ui{n} counts the group's rows.
+
+Click a column heading to sort the groups by it; click again to reverse. \ui{copy all} copies the table
+as tab-separated text.
+
+\begin{description}
+\item[Blanks] in the group column make a group of their own, \ui{(blank)}. A blank value is left out of
+that value's figures; a row with a blank weight is left out of the weighted mean but stays in the plain
+one.
+\item[Text in a value column] is left out of its figures, as a blank is.
+\end{description}
+
+\begin{why}
+The plain and the weighted mean sit side by side because the difference between them is the finding.
+Assays of unequal length averaged without weights give each sample the same say whatever its length; if
+the short samples are the rich ones (as at a contact, where they often are), the plain mean overstates the
+grade. When \ui{mean} and \ui{wmean} disagree, that is worth knowing before anything is estimated.
+\end{why}
+
+\section{From a group to its rows}
+
+Click a group's row: the window closes and the grid is filtered to that group (\code{LITO == "OXIDE"}, or
+\code{LITO is blank} for the blank group).
+
+\begin{caution}
+That filter replaces the current one. If you grouped a filtered view, clicking a group shows the whole
+group, not its part of the filtered view: add the earlier condition back in the filter box.
+\end{caution}
+
+\section{Limits}
+
+lamina keeps up to 1{,}000 groups. A column with more distinct values (a block identifier, a raw grade)
+stops adding groups at the thousandth, its later new values are counted only in the total, and the table
+says it was truncated. Band such a column first (\cref{sec:bands}).
+
+\begin{tryit}
+Weighted and plain, by lithology.
+\begin{enumerate}
+\item Open the sample, then \menu{Tools>Group by…}. \ui{Group by} is \col{LITO}.
+\item Set \ui{Value} to \col{Cu\_pct}, add \col{Au\_gpt}, and set \ui{Weight by} to \col{density}. Click
+\ui{Group}.
+\item Compare \ui{Cu\_pct·mean} and \ui{Cu\_pct·wmean} for TRANSITION: about 0.475 against 0.487. The
+denser blocks are a little richer.
+\item Sort by \ui{Cu\_pct·sum}, then click the SULPHIDE row to see its blocks.
+\end{enumerate}
+\end{tryit}

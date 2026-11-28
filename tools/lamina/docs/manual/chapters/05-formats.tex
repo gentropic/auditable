@@ -10,10 +10,9 @@ the same way. What differs is how the rows are reached, and so what costs what.
 
 \section{Excel workbooks}\label{sec:xlsx}
 
-Open an \file{.xlsx} or \file{.xlsm}. If the workbook has one sheet with data, it opens; if it has
-several, lamina lists them with their sizes (\code{12,480 rows × 22 cols}) and you pick one. Empty sheets
-aren't listed. When there are several, the table is called by the workbook and the sheet:
-\file{assays.xlsx › AU}.
+Open an \file{.xlsx} or \file{.xlsm} and every sheet with data in it opens in a tab of its own, named
+by the workbook and the sheet: \file{assays.xlsx › AU}. The first sheet is read at once; each of the
+others is read the first time you look at its tab. Empty sheets get no tab (\cref{ch:views}).
 
 The columns arrive typed as Excel typed them. A column is a number because the workbook stores numbers
 in it, not because its text happened to parse, so a column of codes stored as text in Excel stays text,
@@ -28,11 +27,6 @@ any size.
 Opening a sheet in lamina is often quicker than starting Excel, and the distribution over each header
 says more about a column at a glance than scrolling it does.
 \end{tip}
-
-\begin{pending}[title={\faHourglassHalf\enskip Every sheet at once}]
-Today a workbook opens one sheet at a time; opening another means opening the workbook again. With
-views and panels (\cref{ch:views}), every sheet will open as a tab.
-\end{pending}
 
 \section{Datamine .dm}\label{sec:dm}
 
@@ -55,6 +49,14 @@ Because every record is the same length and every field sits at the same offset 
 read one column without decoding the others. A filter on a \file{.dm} reads only the fields its
 expression names (\cref{sec:strided}); on a 17-column model filtering on one grade, that is most of the
 file left unread.
+
+\begin{caution}
+A single-precision \file{.dm} stores each number in four bytes, which hold about seven significant
+digits. lamina currently shows and exports those numbers with all the digits of their exact binary
+value, so a grade stored as 0.1 appears as \code{0.10000000149011612}. The value is right to the
+precision the file holds; the extra digits are noise. Set a number format to read them
+(\cref{sec:formats}), and expect the noise in a CSV exported from such a file until this is fixed.
+\end{caution}
 
 \begin{caution}
 A \file{.dm} inside an archive (\file{model.dm.gz}, or a zip holding a \file{.dm}) currently opens as a

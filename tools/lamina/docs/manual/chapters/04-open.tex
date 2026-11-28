@@ -9,8 +9,8 @@ text in all its dialects, and how to correct it when it decides wrong.
 \begin{description}
 \item[\menu{File>Open…}] or \key{Ctrl}+\key{O}: the system's file picker. In Chrome and Edge the picker
 hands lamina a handle it can keep, so the file can be reopened from the recents later.
-\item[Drag and drop] a file anywhere onto the window. lamina holds one file at a time: if you drop
-several, it opens the first.
+\item[Drag and drop] a file anywhere onto the window. Each file opens in a tab of its own, so dropping
+several opens them all (\cref{ch:views}).
 \item[A recent file] from the \menu{File} menu or the empty screen (\cref{sec:recents}).
 \item[The operating system] where lamina is installed as an app, opening a \file{.lamina} or \file{.lam}
 lens file with it (\cref{ch:lens}). lamina registers only its own lens extensions, not \file{.csv} or
@@ -134,13 +134,8 @@ A text file that isn't a table opens as one column, \col{line}, with a row per l
 jump to a line, filter it (\code{line contains "ERROR"}) and export what the filter keeps: a log or a
 report of any size is readable this way.
 
-A file that holds bytes text never does opens as a note saying it is binary, with its size, and nothing
-else.
-
-\begin{pending}[title={\faHourglassHalf\enskip The raw view}]
-The note for a binary file points at a hex viewer lamina doesn't have yet. The raw view
-(\cref{ch:raw}) will show any file's bytes, as lines or as hex.
-\end{pending}
+A file that holds bytes text never does opens as a note in its tab, \ui{not a table}, with its size.
+\menu{View>Raw (hex)} shows its bytes (\cref{ch:raw}).
 
 \section{The interpretation popover}\label{sec:interpretation}
 
