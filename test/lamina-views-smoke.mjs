@@ -208,6 +208,27 @@ for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamin
   check(recall.back.filter === 'v = 3' && /^10 of 50 rows/.test(recall.back.meta) && /brought back/.test(recall.back.meta) && /reopen the file you had open \(again\.csv\)/.test(recall.offer || ''),
     `[${tag}] a file opened again brings back its last view; the empty page offers the session`, recall);
 
+  // 12 ── the rows a filter leaves out, in a view beside it; a data-quality flag goes to its row's bytes
+  const comp = await E(async () => {
+    const l = window._lamina, wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    for (const v of l.views) l.rails.closeTab(v.tabId);
+    await l.openInTab(new File(['ID,AU,LITO\n' + Array.from({ length: 300 }, (_, i) => `${i},${(i % 10) / 10},${i === 120 ? 'OX ' : i % 2 ? 'OX' : 'FR'}${i === 200 ? ',extra' : ''}`).join('\n')], 'dq.csv'));
+    await wait(300);
+    document.getElementById('filter').value = 'AU >= 0.5'; await l.applyFilter('AU >= 0.5');
+    await l.complementView(); await wait(400);
+    const metas = l.views.map((v) => { l.setFocus(v); return [document.getElementById('filter').value, document.getElementById('meta').textContent.split(' × ')[0]]; });
+    l.setFocus(l.views[0]); await l.applyFilter(''); document.getElementById('filter').value = '';
+    await l.showDataQuality(); await wait(600);
+    const rows = [...document.querySelectorAll('#helpBody .sum-tbl tbody tr')].map((tr) => tr.textContent);
+    const btn = [...document.querySelectorAll('#helpBody .dq-raw')].find((b) => /wrong number of fields/.test(b.closest('tr').textContent));
+    btn && btn.click(); await wait(700);
+    const v = l.focused, at = v && v.raw && await v.baseVs.ensureRow(v.grid.getSelection().r0);
+    return { metas, flagged: rows.filter((t) => /fields|padding/.test(t)).map((t) => t.replace(/\s+/g, ' ').slice(0, 90)), raw: at };
+  });
+  check(comp.metas.length === 2 && comp.metas[0][0] === 'AU >= 0.5' && comp.metas[1][0] === 'not (AU >= 0.5)' && /^150 of 300/.test(comp.metas[0][1]) && /^150 of 300/.test(comp.metas[1][1])
+    && comp.raw && comp.raw[1] === '200,0,FR,extra␊',
+  `[${tag}] the rows a filter leaves out open beside it (150 | 150); a "wrong number of fields" flag → row 201's bytes`, comp);
+
   check(!errors.length, `[${tag}] no page errors`, errors);
   await page.context().close();
 }

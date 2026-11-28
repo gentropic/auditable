@@ -186,35 +186,41 @@ const DQ_SENTINELS = new Set([-9, -99, -999, -9999, -99999]);
 const DQ_DATE_RE = /^\d{4}[-/]\d{1,2}[-/]\d{1,2}/;
 export async function scanDataQuality(source, { schema, dataStart = 0, decimal = '.', rows = null, limit = Infinity, onProgress, signal } = {}) {
   const cols = schema.length;
-  const acc = schema.map((s) => ({ num: s.type === 'number', n: 0, nulls: 0, nonNum: 0, ex: new Set(), distinct: new Set(), lead: 0, pad: 0, thou: 0, dateLike: 0, min: Infinity, minCount: 0 }));
+  // each issue also keeps the FIRST display row it was seen on (`at`) — the place to go and look
+  const acc = schema.map((s) => ({ num: s.type === 'number', n: 0, nulls: 0, nonNum: 0, ex: new Set(), distinct: new Set(), lead: 0, pad: 0, thou: 0, dateLike: 0, min: Infinity, minCount: 0, at: {} }));
+  const first = (a, k, disp) => { if (a.at[k] == null) a.at[k] = disp; };
+  const ragged = { n: 0, at: null, got: null };            // a record with the wrong number of fields (a stray delimiter, a short line)
   await source.eachRecord({ dataStart, rows, limit, signal, onProgress }, (disp, fields) => {
+    if (fields.length !== cols && source.kind === 'delimited') { ragged.n++; if (ragged.at == null) { ragged.at = disp; ragged.got = fields.length; } }
     for (let i = 0; i < cols; i++) {
       const a = acc[i]; a.n++;
       const raw = fields[i];
       if (raw == null || raw === '') { a.nulls++; continue; }
       const s = String(raw), t = s.trim();
-      if (s !== t) a.pad++;
+      if (s !== t) { a.pad++; first(a, 'pad', disp); }
       if (a.distinct.size < 50) a.distinct.add(t);
       const x = parseNum(t, decimal);
-      if (Number.isNaN(x)) { a.nonNum++; if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
+      if (Number.isNaN(x)) { a.nonNum++; first(a, 'nonNum', disp); if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
       else {
-        if (x < a.min) { a.min = x; a.minCount = 1; } else if (x === a.min) a.minCount++;
-        if (a.num) { if (/^0[0-9]/.test(t)) a.lead++; if (decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) a.thou++; }
+        if (x < a.min) { a.min = x; a.minCount = 1; a.at.min = disp; } else if (x === a.min) a.minCount++;
+        if (a.num) { if (/^0[0-9]/.test(t)) { a.lead++; first(a, 'lead', disp); } if (decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) { a.thou++; first(a, 'thou', disp); } }
       }
     }
   });
   const out = [];
+  if (ragged.n) out.push({ col: -1, name: '(every column)', severity: 'high', issue: 'wrong number of fields', at: ragged.at,
+    detail: `${ragged.n} row(s) don't have ${cols} fields — the first, row ${(ragged.at + 1).toLocaleString()}, has ${ragged.got} (a stray delimiter, a broken quote, a short line)` });
   for (let i = 0; i < cols; i++) {
     const a = acc[i], name = schema[i].name, present = a.n - a.nulls;
-    const add = (severity, issue, detail) => out.push({ col: i, name, severity, issue, detail });
+    const add = (severity, issue, detail, at) => out.push(at == null ? { col: i, name, severity, issue, detail } : { col: i, name, severity, issue, detail, at });
     if (a.n === 0) continue;
     if (a.nulls === a.n) { add('high', 'all blank', 'no values in the sample'); continue; }
     if (a.distinct.size === 1) add('info', 'constant', `every value is "${[...a.distinct][0]}"`);
-    if (a.num && a.lead > 0) add('high', 'leading zeros lost', `${a.lead} value(s) like "007" read as numbers — leading zeros dropped (looks like a code, not a number)`);
-    if (a.num && a.nonNum > 0) add('warn', 'non-numeric values', `${a.nonNum} present-but-not-a-number${a.ex.size ? ` (e.g. ${[...a.ex].slice(0, 4).join(', ')})` : ''}`);
-    if (a.thou > 0) add('warn', 'thousands separators', `${a.thou} value(s) like "1,234" — check the decimal setting`);
-    if (a.pad > 0) add('warn', 'whitespace padding', `${a.pad} value(s) have leading/trailing spaces (can break filters/joins)`);
-    if (a.num && DQ_SENTINELS.has(a.min) && a.minCount >= 2) add('warn', 'possible sentinel', `min ${a.min} appears ${a.minCount}× — likely a missing-value code, not a real number`);
+    if (a.num && a.lead > 0) add('high', 'leading zeros lost', `${a.lead} value(s) like "007" read as numbers — leading zeros dropped (looks like a code, not a number)`, a.at.lead);
+    if (a.num && a.nonNum > 0) add('warn', 'non-numeric values', `${a.nonNum} present-but-not-a-number${a.ex.size ? ` (e.g. ${[...a.ex].slice(0, 4).join(', ')})` : ''}`, a.at.nonNum);
+    if (a.thou > 0) add('warn', 'thousands separators', `${a.thou} value(s) like "1,234" — check the decimal setting`, a.at.thou);
+    if (a.pad > 0) add('warn', 'whitespace padding', `${a.pad} value(s) have leading/trailing spaces (can break filters/joins)`, a.at.pad);
+    if (a.num && DQ_SENTINELS.has(a.min) && a.minCount >= 2) add('warn', 'possible sentinel', `min ${a.min} appears ${a.minCount}× — likely a missing-value code, not a real number`, a.at.min);
     if (!a.num && present && a.dateLike / present >= 0.8) add('info', 'dates stored as text', 'values look like dates (lamina has no date type yet — sorts/filters as text)');
     if (a.nulls > 0 && a.nulls / a.n >= 0.5) add('info', 'high blank rate', `${Math.round(100 * a.nulls / a.n)}% blank`);
   }

@@ -70,3 +70,17 @@ test('hex: 16 bytes a row, offset in hex, text with dots; the cursor scans the s
   assert.deepEqual(offs, [0, 16, 32]);
   assert.deepEqual(await cursor.readByLoc(16, 16), (await view.ensureRow(1)));
 });
+
+test('data quality says where: the first row of each issue, and rows with the wrong number of fields', async () => {
+  const { scanDataQuality } = await import('../ext/lamina/src/main.js');
+  const text = 'ID,AU,LITO\n1,0.5,OX\n2,0.7,OX \n3,x,FR\n4,0.1,FR,extra\n5,0.2,FR\n';
+  const bytes = enc(text);
+  const schema = [{ name: 'ID', type: 'number' }, { name: 'AU', type: 'number' }, { name: 'LITO', type: 'string' }];   // AU declared numeric (one "x" in five)
+  const src = buildMemorySource(bytes, { kind: 'delimited', delimiter: ',' });
+  const f = await scanDataQuality(src, { schema, dataStart: 1 });
+  const by = Object.fromEntries(f.map((x) => [x.issue, x]));
+  assert.equal(by['wrong number of fields'].at, 3);
+  assert.match(by['wrong number of fields'].detail, /row 4, has 4/);
+  assert.equal(by['whitespace padding'].at, 1);
+  assert.equal(by['non-numeric values'].at, 2);
+});

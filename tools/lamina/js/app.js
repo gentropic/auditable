@@ -578,9 +578,12 @@ function selectRow(c, r, cols = 1) {
 }
 // Show raw: this row's bytes, in the raw view beside the table
 async function showRawOfRow(c, row) {
-  const ro = c.rawOf; if (!ro) return;
   const vs = c.view || c.baseVs;
-  const rec = (vs.rowHeaderAt ? vs.rowHeaderAt(row) - 1 : row) + c.dataStart;
+  return showRawOfRecord(c, (vs.rowHeaderAt ? vs.rowHeaderAt(row) - 1 : row) + c.dataStart);
+}
+const rawLocatable = (c) => !!(c && c.rawOf && (c.rawOf.recOffset || (c._src0 && c._src0.blockOffsets)));
+async function showRawOfRecord(c, rec) {
+  const ro = c.rawOf; if (!ro) return;
   let off = 0;
   if (ro.recOffset) off = ro.recOffset(rec);
   else if (c._src0 && c._src0.blockOffsets) off = await recordOffset(c._src0, rec, (b) => splitRecordsPos(b, { kind: c._src0.kind, quote: (c._src0.quote || '"').charCodeAt(0) }));
@@ -622,6 +625,20 @@ async function switchRawAt(c, row, mode) {
   _openNext = 'replace';
   const v = await mountRaw(c.rawOf, to, { srcTab: c.rawSrcTab });
   if (off != null) await revealOffset(v, off);
+}
+
+// the rows a filter leaves out, in a view of their own beside it (ore | waste) — two
+// independent views; nothing links them but the expression that made them
+async function complementView() {
+  const c = current; if (!c) return;
+  const expr = $('#filter').value.trim(); if (!expr) return;
+  await newViewOfFocused();
+  if (current === c) return;
+  const not = `not (${expr})`;
+  $('#filter').value = not; syncFilterClear();
+  await applyFilter(not);
+  const at = findTab(rails.state, c.tabId);
+  if (innerWidth >= 720 && at && at.container === 'dock') { rails.moveTab(current.tabId, { to: 'split', nodeId: at.stack.id, side: 'right' }); rails.activateTab(current.tabId); }
 }
 
 // Mount a built source (memory / streaming / tape) read-only. Builds the base
@@ -2915,6 +2932,7 @@ $('#mView').onclick = () => menuAt($('#mView'), [
     { label: (theme === 'light' ? '✓ ' : '') + 'Light', action: () => setTheme('light') },
   ] },
   { label: 'New view of this file', action: () => { if (hasFile()) newViewOfFocused(); } },
+  { label: 'New view of the rows this filter leaves out', action: () => { if (hasTable() && $('#filter').value.trim()) complementView(); } },
   { label: 'Raw — the lines as they are', action: () => openRawOfFocused('lines') },
   { label: 'Raw — the bytes in hex', action: () => openRawOfFocused('hex') },
   { sep: true },
@@ -3599,14 +3617,23 @@ function paintDataQuality(c) {
   const dot = { high: 'var(--fault)', warn: 'var(--accent)', info: 'var(--muted)' };
   let h = '<button id="dqCopy" class="sum-copy">copy all</button>';
   h += `<div style="color:var(--dim);font-size:11px;margin:2px 0 6px">${f.length} flag(s) — from a sample · click a row to inspect the column</div>`;
-  h += '<div style="overflow:auto;max-height:60vh"><table class="sum-tbl"><thead><tr><th></th><th>column</th><th>flag</th><th>detail</th></tr></thead><tbody>';
+  h += '<div style="overflow:auto;max-height:60vh"><table class="sum-tbl"><thead><tr><th></th><th>column</th><th>flag</th><th>detail</th><th>first at</th></tr></thead><tbody>';
+  const canRaw = rawLocatable(c);
   for (const x of f) {
     const fix = x.issue === 'leading zeros lost' ? ` <button class="dq-fix" data-uc="${x.col}" title="store this column as text so the leading zeros survive">fix: treat as text</button>` : '';
-    h += `<tr data-uc="${x.col}"><td style="color:${dot[x.severity]};text-align:center">●</td><td><span class="col-jump" title="go to this column in the grid">${esc(x.name)}</span></td><td>${esc(x.issue)}</td><td style="color:var(--muted);white-space:normal">${esc(x.detail)}${fix}</td></tr>`;
+    const at = x.at == null ? '' : `row ${(x.at + 1).toLocaleString()} <button class="dq-go" data-at="${x.at}" title="go to that row">go</button>${canRaw ? ` <button class="dq-raw" data-at="${x.at}" title="the bytes of that row, as the file has them">raw</button>` : ''}`;
+    const name = x.col >= 0 ? `<span class="col-jump" title="go to this column in the grid">${esc(x.name)}</span>` : esc(x.name);
+    h += `<tr data-uc="${x.col}"><td style="color:${dot[x.severity]};text-align:center">●</td><td>${name}</td><td>${esc(x.issue)}</td><td style="color:var(--muted);white-space:normal">${esc(x.detail)}${fix}</td><td style="white-space:nowrap">${at}</td></tr>`;
   }
   h += '</tbody></table></div>';
   $('#helpBody').innerHTML = h;
-  $('#helpBody').querySelectorAll('.sum-tbl tbody tr').forEach((tr) => tr.onclick = () => showColumnStats(+tr.getAttribute('data-uc')));
+  $('#helpBody').querySelectorAll('.sum-tbl tbody tr').forEach((tr) => tr.onclick = () => { const uc = +tr.getAttribute('data-uc'); if (uc >= 0) showColumnStats(uc); });
+  $('#helpBody').querySelectorAll('.dq-go').forEach((b) => b.onclick = (e) => {
+    e.stopPropagation(); $('#help').classList.remove('show');
+    const r = displayRowOf(c, +b.dataset.at); if (r < 0) { say(c, 'that row is filtered out of this view'); return; }
+    selectRow(c, r, 1);
+  });
+  $('#helpBody').querySelectorAll('.dq-raw').forEach((b) => b.onclick = (e) => { e.stopPropagation(); $('#help').classList.remove('show'); showRawOfRecord(c, +b.dataset.at + c.dataStart); });
   $('#helpBody').querySelectorAll('.dq-fix').forEach((b) => b.onclick = (e) => { e.stopPropagation(); setColType(+b.getAttribute('data-uc'), 'string'); showDataQuality(); });   // text column → leading zeros preserved → re-scan clears the flag
   wireColJump();   // the name → jump to the column in the grid
   const cp = $('#dqCopy'); if (cp) cp.onclick = () => { copyText(['severity\tcolumn\tflag\tdetail', ...f.map((x) => `${x.severity}\t${x.name}\t${x.issue}\t${x.detail}`)].join('\n')); cp.textContent = 'copied ✓'; setTimeout(() => { cp.textContent = 'copy all'; }, 1200); };
@@ -4478,7 +4505,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
