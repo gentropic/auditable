@@ -1,0 +1,213 @@
+\chapter{Opening a file}\label{ch:open}
+\begin{goals}
+\textbf{In this chapter} you open files, learn how lamina decides what a file is, how it reads delimited
+text in all its dialects, and how to correct it when it decides wrong.
+\end{goals}
+
+\section{Four ways in}\label{sec:ways-in}
+
+\begin{description}
+\item[\menu{File>Open…}] or \key{Ctrl}+\key{O}: the system's file picker. In Chrome and Edge the picker
+hands lamina a handle it can keep, so the file can be reopened from the recents later.
+\item[Drag and drop] a file anywhere onto the window. lamina holds one file at a time: if you drop
+several, it opens the first.
+\item[A recent file] from the \menu{File} menu or the empty screen (\cref{sec:recents}).
+\item[The operating system] where lamina is installed as an app, opening a \file{.lamina} or \file{.lam}
+lens file with it (\cref{ch:lens}). lamina registers only its own lens extensions, not \file{.csv} or
+\file{.dm}: it won't take those over from Excel or Datamine.
+\end{description}
+
+\section{How lamina decides what a file is}\label{sec:detection}
+
+lamina doesn't go by the file's extension, which is often wrong or missing. It looks at the bytes, in
+this order, and takes the first answer that fits:
+
+\begin{enumerate}
+\item \textbf{A lens}: a small JSON file carrying lamina's marker. It is applied to the open table, not
+opened as data (\cref{ch:lens}).
+\item \textbf{A workbook}: a zip whose name ends \file{.xlsx} or \file{.xlsm} (\cref{sec:xlsx}).
+\item \textbf{An archive}: zip, tar, gzip, Zstandard, xz or bzip2, recognised by the signature bytes at
+its start (\cref{sec:archives}).
+\item \textbf{Apache Parquet}: the four bytes \code{PAR1} at both ends of the file
+(\cref{sec:parquet}).
+\item \textbf{Datamine \file{.dm}}: a recognisable first page of field definitions (\cref{sec:dm}).
+\item \textbf{A file opened before}: if its index is in the cache (same name, size and modification
+time), lamina reuses it with the interpretation it found then, and the table appears without a scan
+(\cref{sec:index-cache}).
+\item \textbf{Text}: anything else is examined as text, from its first 64~KB. A table if a delimiter
+splits its lines consistently; plain text otherwise; binary if it holds the zero bytes and control
+characters text doesn't.
+\end{enumerate}
+
+The kind badge at the top right names the result.
+
+\section{Delimited text}\label{sec:delimited}
+
+\subsection{The delimiter}
+
+lamina tries comma, tab, semicolon, pipe and runs of whitespace, and picks the one that splits the most
+lines into the same number of columns. A delimiter that gives a consistent count wins; a file whose name
+ends \file{.csv}, \file{.tsv} or \file{.tab} is read as a table even when its rows are ragged, using the
+best delimiter found. A file with no consistent delimiter and no such name opens as plain text
+(\cref{sec:text}).
+
+Whitespace is the delimiter of scientific dumps: columns of numbers separated by spaces, aligned or not.
+lamina considers it only when at least half the tokens are numbers, so that ordinary prose, which also
+splits on spaces, isn't taken for a table. A real delimiter on the same data wins over whitespace.
+
+\subsection{The header}
+
+A header row is assumed when every field of the first row is text and some later row has a number in it.
+That is right for most exports, and wrong in two cases worth knowing:
+
+\begin{itemize}
+\item \textbf{A table that is all text}, such as a list of codes and descriptions. No row has a number,
+so the names are read as the first data row and the columns are called \col{col 1}, \col{col 2}, and so
+on.
+\item \textbf{Numbers written with a decimal comma}, when lamina hasn't been told about the comma
+(below). The numbers read as text, so again no row has one.
+\end{itemize}
+
+In both cases, set \ui{Header} to \ui{yes} in the interpretation popover (\cref{sec:interpretation}).
+A column with no name in the header is called \col{col} and its number. The number of columns is the
+length most rows have, so one stray row with an extra field doesn't add a column.
+
+\subsection{Quoting}
+
+Fields may be quoted with double quotes, as Excel and most tools write them. Inside quotes a delimiter is
+part of the field, a line break is part of the field (the record goes on to the next line), and a doubled
+quote is a quote: \code{"Smith, J."} is one field, and \code{"said ""hi"""} reads \code{said "hi"}.
+
+\subsection{A comment preamble}
+
+Many geological exports start with a block of metadata lines before the header, each beginning with
+\code{\#}. When the first line starts with \code{\#}, lamina skips every line at the start that does, and
+reads the header from the first line that doesn't. The status line says so:
+\code{2 \#-comment lines skipped}. A preamble marked with another character can be named in the
+popover's \ui{Comment} box, and a preamble with no marker at all is skipped with \ui{Skip rows}.
+
+\subsection{GSLIB and Geo-EAS}\label{sec:geoeas}
+
+The GSLIB format \parencite{deutsch1998} names its columns in a preamble rather than a header: a title
+line, a line with the number of columns $n$, then $n$ lines each holding one column name, then the data,
+usually separated by whitespace. lamina recognises the shape, takes the names from the preamble, and
+starts the data after it.
+
+\begin{codeblock}
+sample data
+3
+X
+Y
+GRADE
+1.0 2.0 0.5
+2.0 3.0 1.25
+\end{codeblock}
+
+\subsection{The decimal comma}\label{sec:decimal-comma}
+
+In Brazil and much of Europe a number is written \code{45,2} and the column delimiter is then usually a
+semicolon. lamina doesn't guess the decimal comma: set \ui{Decimal} to \ui{comma (1,5)} in the
+popover. With it, \code{45,2} reads as 45.2 and \code{1.234,56} as 1234.56 (the point is taken as a
+thousands separator), filters and statistics treat those columns as numbers, and the header guess is
+made again with the numbers recognised.
+
+\begin{caution}
+Until the decimal comma is set, a semicolon file of comma-decimal numbers opens with every column as
+text and its header read as a data row. Nothing is wrong with the file; lamina hasn't been told how it
+writes numbers. One change in the popover fixes both.
+\end{caution}
+
+\subsection{Encodings}\label{sec:encodings}
+
+lamina reads text as UTF-8 unless told otherwise. A file written by older Windows software is often in
+Windows-1252 or Latin-1, where accented letters are single bytes that aren't valid UTF-8. Read as UTF-8,
+\code{maçica} shows as \code{ma�ica}.
+
+lamina notices: when bytes in the file's first 64~KB don't decode as UTF-8, a \ui{⚠ encoding?} hint
+appears in the status line. Click it, or set \ui{Encoding} in the popover, to \ui{Western
+(Windows-1252)}, \ui{Latin-1 (ISO-8859-1)}, \ui{UTF-16 LE} or \ui{UTF-16 BE}. The hint goes once you have
+chosen an encoding.
+
+\section{Plain text and binary}\label{sec:text}
+
+A text file that isn't a table opens as one column, \col{line}, with a row per line. You can scroll it,
+jump to a line, filter it (\code{line contains "ERROR"}) and export what the filter keeps: a log or a
+report of any size is readable this way.
+
+A file that holds bytes text never does opens as a note saying it is binary, with its size, and nothing
+else.
+
+\begin{pending}[title={\faHourglassHalf\enskip The raw view}]
+The note for a binary file points at a hex viewer lamina doesn't have yet. The raw view
+(\cref{ch:raw}) will show any file's bytes, as lines or as hex.
+\end{pending}
+
+\section{The interpretation popover}\label{sec:interpretation}
+
+Click the kind badge, or open \menu{Data>Interpretation (delimiter / header / skip)…}. The popover lists
+what lamina detected, under \ui{Detected}, and the settings that override it.
+
+\shot[0.62\linewidth]{interpretation}{The interpretation popover on the sample: what lamina detected
+(delimiter, columns, header, encoding), and the settings that override it.}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lML@{}}
+\toprule
+\sffamily\bfseries setting & \sffamily\bfseries what it does & \sffamily\bfseries choices \\
+\midrule
+\ui{View as} & read the file as a table or as lines of text & auto · table · text \\
+\ui{Delimiter} & the column separator & auto · comma · semicolon · tab · pipe · whitespace \\
+\ui{Header} & whether the first row names the columns & auto · yes · no \\
+\ui{Decimal} & how numbers write their fraction & point (1.5) · comma (1,5) \\
+\ui{Encoding} & how the bytes become characters & UTF-8 · Windows-1252 · Latin-1 · UTF-16 LE · UTF-16 BE \\
+\ui{Skip rows} & lines to skip before the header & a number \\
+\ui{Comment} & skip the leading lines that start with this & a character or word \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+Changing a setting reads the file again with it, at once. A setting left on \ui{auto} or blank keeps
+the detected value. For a Datamine or Parquet file the list shows what was found (its format, columns,
+and for Parquet its row groups and compression). Their columns and types come from the file itself, so
+there is nothing to override: the settings are still shown below the list, but changing them does
+nothing.
+
+\begin{note}
+A forced interpretation isn't stored in the index cache: the next time you open the file, lamina detects
+it afresh. To keep a forced interpretation with a file, save a lens (\cref{ch:lens}); a lens records the
+settings you changed and applies them when it is opened.
+\end{note}
+
+\section{When a file can't be shown}\label{sec:failures}
+
+lamina says why rather than showing an empty grid or garbage. The grid is replaced by a short note:
+
+\begin{description}
+\item[\ui{binary file}] the bytes aren't text and no reader recognised them.
+\item[\ui{archive too large}] a Zstandard, xz, bzip2 or tar archive larger than 32~MB: these must be
+decompressed whole, in memory (\cref{sec:archives}).
+\item[\ui{workbook too large}] a workbook larger than 32~MB, for the same reason (\cref{sec:xlsx}).
+\item[\ui{empty archive}], \ui{no data in this workbook} — exactly that.
+\item[\ui{couldn't read this …}] a damaged or truncated workbook or archive, with the reader's own
+message.
+\item[\ui{can't show this Parquet file}] a Parquet file lamina can't decode, with the reason: most
+often a compression it doesn't carry (\cref{sec:parquet}).
+\end{description}
+
+\begin{tryit}
+Make lamina misread a file, then correct it.
+\begin{enumerate}
+\item Save these four lines in a text editor as \file{assays.csv}:
+\begin{codeblock}
+HOLE;FROM;TO;FE
+DH1;0,0;1,5;45,2
+DH1;1,5;3,0;51,7
+DH2;0,0;2,0;38,9
+\end{codeblock}
+\item Open it in lamina. It reads four rows and four columns called \col{col 1} to \col{col 4}: the
+semicolon was found, but the numbers read as text, so the header was taken for data.
+\item Click the kind badge and set \ui{Decimal} to \ui{comma (1,5)}. The table reads again: three rows,
+columns \col{HOLE}, \col{FROM}, \col{TO}, \col{FE}, and the three numeric columns are numbers (their
+headers carry a histogram now).
+\end{enumerate}
+\end{tryit}

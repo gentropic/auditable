@@ -1,0 +1,42 @@
+\chapter*{About this book}
+\addcontentsline{toc}{chapter}{About this book}
+\markboth{About this book}{About this book}
+
+This is the manual for lamina, a viewer for tables too large to open in a spreadsheet, in one HTML file.
+It opens a CSV, a Datamine \file{.dm}, a Parquet file, a workbook or an archive without importing it,
+shows the rows as you scroll, and answers questions about them: a filter, a sort, a derived column,
+statistics, a grade–tonnage report, a check of the file's quality. It never changes the file, and it
+makes no network connection while it does any of this.
+
+It is written for a resource geologist, or anyone else who receives large exports and has to find out
+what is in them: someone who knows what a block model, a cutoff and a weighted mean are, and does not
+know lamina. The geology is not explained; lamina is.
+
+\section*{How to read it}
+
+Part~I is the introduction: what lamina is, a first ten minutes with the sample block model, and the
+ways to run it. Part~II is about opening files: every format lamina reads, how it decides what a file
+is, how to correct it when it decides wrong, and how a file of several gigabytes scrolls without being
+loaded. Part~III is the table itself: the grid and the distribution drawn above each column. Part~IV is
+asking questions: the filter, the expression language it is written in, and calculated columns. Part~V
+is the instruments: statistics, group by, grade–tonnage, grid summary and data quality. Part~VI is
+keeping and sharing: lenses, export, and what Sealed means. The appendices give the page-embedding API,
+the keys and mouse, every function of the expression language, and the limits lamina works within.
+
+Read \cref{ch:lamina} first; after that the chapters stand on their own.
+
+The examples use the sample block model, 120{,}000 blocks that lamina generates on your own machine
+when you click \ui{▸ open a sample block model} on its empty screen. Nothing is downloaded, so you can
+follow every \emph{Try it} box as you read, offline.
+
+\section*{Conventions}
+
+A menu path looks like \menu{Tools>Grade–tonnage…}, a key like \key{Ctrl}+\key{F}, a column like
+\col{Cu\_pct}, a file like \file{sample\_blockmodel.csv}, and an expression or a value you type like
+\code{Cu\_pct > 0.5}. On a Mac, read \key{⌘} where the book says \key{Ctrl}.
+
+\begin{pending}
+Three parts of lamina are being built while this book is written: tabs and splits holding several files
+and views at once, a raw view of any file's bytes as lines or hex, and lenses that keep several views and
+several files. Their chapters are marked like this box until they land.
+\end{pending}

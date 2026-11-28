@@ -1,0 +1,153 @@
+\chapter{How a huge file scrolls}\label{ch:huge}
+\begin{goals}
+\textbf{In this chapter} you learn how lamina reads a file it never loads: the index it builds, how a
+screenful is read, how filters, sorts and statistics pass through the file, and what each of them costs.
+It is the chapter to read before you open a file larger than your memory.
+\end{goals}
+
+\Cref{sec:windowed} gave the idea in a paragraph. This chapter gives the mechanism, because knowing it
+tells you what will be fast, what will take a pass through the file, and where the limits are.
+
+\section{The block index}\label{sec:block-index}
+
+When you open a delimited file, lamina reads it once from start to end. It doesn't keep what it reads.
+It counts records (a record is a line, unless a quoted field carries a line break into the next), and
+every 4{,}096 records it notes the byte offset where the next one starts. The list of those offsets is the
+\term{block index}. With it, the file is a sequence of blocks of 4{,}096 records each, and lamina knows
+where each block starts.
+
+The index is small: one number per block, eight bytes. A file of 50~million rows has about 12{,}200
+blocks, an index of about 100~KB. That, and a few blocks of the file, is all lamina holds for the file
+itself.
+
+\begin{center}
+\begin{tikzpicture}[x=1mm, y=1mm, font=\sffamily\scriptsize, text=ink]
+  \foreach \i in {0,...,9} { \fill[tint] (\i*12, 0) rectangle ++(11.2, 7); }
+  \fill[ambersoft] (36, 0) rectangle ++(11.2, 7); \fill[ambersoft] (48, 0) rectangle ++(11.2, 7);
+  \foreach \i in {0,...,9} { \draw[amber, line width=0.6pt] (\i*12, 7) -- ++(0, 3); }
+  \node[anchor=west] at (0, 13) {block index: where every 4{,}096th record starts};
+  \node[anchor=west, text=muted] at (0, -4) {the file, in blocks of 4{,}096 records};
+  \draw[{Stealth[length=2mm]}-, sel, line width=0.6pt] (48, -1) -- (62, -9) node[anchor=west, text=sel] {the blocks on screen: read, decoded, kept};
+  \node[anchor=west, text=muted] at (121, 3.5) {…};
+\end{tikzpicture}
+\end{center}
+
+\subsection{Building it}
+
+The pass that builds the index runs in a background worker, so the window stays responsive and you can
+watch the status line count \code{indexing… 37\%}. It reads the file in chunks straight from the disk, so
+a file larger than memory is indexed without being loaded. Where a worker can't be started (lamina on
+\file{file://}, \cref{sec:single-file}), the same pass runs on the page itself, and the status line
+counts it the same way.
+
+The detection of the file's format (\cref{sec:detection}) uses only its first 64~KB and happens before
+the pass, so a misread file can be corrected before you wait for a full index.
+
+\subsection{The index cache}\label{sec:index-cache}
+
+lamina keeps each file's index on your machine, keyed by the file's name, size and modification time
+(\cref{sec:local-state}). Open the same file again and the index comes from the cache: the table is
+there without a pass. Change the file, and its size or modification time changes with it, so it is
+indexed afresh. The cache holds offsets, not data.
+
+\section{Reading a screenful}\label{sec:screenful}
+
+To show rows 1{,}204{,}000 to 1{,}204{,}040, lamina finds the block they are in (row number divided by
+4{,}096), reads that block's bytes from the file (from its offset to the next one's), splits it into
+records and decodes the ones on screen. The last 16 blocks read are kept, so scrolling within them, or
+back to them, reads nothing. Jumping anywhere is the same single read, which is why the row box answers
+at once at any depth.
+
+\section{Scans}\label{sec:scans}
+
+A filter, a sort, a statistic or an export has to look at every row, so it is a \term{scan}: one pass
+through the file, block by block, keeping only what the operation needs. While it runs, the status line
+counts its progress, and \key{Esc} cancels it, leaving the view as it was.
+
+\begin{description}
+\item[A filter] keeps, for each matching row, where it is in the file: its byte offset and length, and
+its row number. Twenty-four bytes per match, however wide the row. The filtered view then reads each
+row on screen directly from its offset.
+\item[A sort] keeps, for each row, the same location plus its sort keys, then orders them. Sorting a
+filtered view sorts only its matches. This is why a large file is best filtered before it is sorted.
+\item[Statistics] keep running sums (count, mean, the sums of squared and cubed deviations) and, for
+the exact quantiles, the column's values as numbers (\cref{sec:one-column}).
+\item[Group by and grade–tonnage] keep one set of running sums per group.
+\item[An export] keeps nothing: each row is written as it is read (\cref{ch:export}).
+\end{description}
+
+Scans compose. A sort runs over the current filter's matches; statistics, group by and grade–tonnage
+run over them too. Every instrument respects the filter.
+
+\section{The record cursor}\label{sec:cursor}
+
+Underneath, every format reaches the scans the same way, through a \term{record cursor}: something that
+can walk the records in order and re-read one by its location. For a CSV the location is a byte offset
+and length. For a \file{.dm} it is the record number. For a Parquet file it is the row's number in the
+file. The filter, the sort, the statistics and the export are written once, against the cursor, and
+work on every format unchanged. That is why a \file{.dm} filters and sorts exactly as a CSV does.
+
+\subsection{Strided reads of a .dm}\label{sec:strided}
+
+A \file{.dm} record has the same length everywhere and each field sits at the same place inside it. To
+read one field from every record, lamina can step through the file in strides of the record length and
+decode just that field, without decoding the rest. A filter uses this: it reads only the columns its
+expression names. On a wide model and a filter over one or two columns, that is most of the work saved.
+
+\subsection{Column reads of a Parquet file}
+
+Parquet stores each column of a row group separately, so a scan reads only the columns it needs, and a
+filter also skips whole row groups its footer statistics rule out (\cref{sec:pruning}).
+
+\begin{note}
+Both of these are about the filter's own columns. When calculated columns exist, a filter on a
+\file{.dm} or Parquet file reads every column, because a calculated column may use any of them
+(\cref{ch:calc}).
+\end{note}
+
+\section{What it costs}\label{sec:costs}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries you do & \sffamily\bfseries it costs \\
+\midrule
+open a file the first time & one pass, to build the index \\
+open it again & nothing: the index is cached \\
+scroll, jump to a row, resize & reading one block, or none \\
+filter & one pass; 24 bytes per match \\
+sort & one pass over the rows (or the matches); their locations and keys in memory \\
+statistics of one column & one pass; the column's values, for the quantiles \\
+column summary (Σ stats) & two passes, every column at once \\
+group by, grade–tonnage & one pass each (grade–tonnage's curves, a second) \\
+export & one pass; nothing kept \\
+the distributions over the headers & a sample of 8{,}192 rows, read when the file opens \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+A pass costs what reading the file costs: the disk's speed, plus decompression for a compressed source,
+plus decoding the fields the scan needs. A filter over a CSV decodes every row (the text has to be split
+to find any field); a filter over a \file{.dm} or Parquet decodes only its columns.
+
+\section{The limits}\label{sec:huge-limits}
+
+Holding only locations has a price: the number of locations. A filter keeps at most 16{,}777{,}216
+matches and a sort at most 5{,}242{,}880 rows. Past the first, the filter stops with
+\code{too many matches — refine the filter} and the view stays as it was; past the second, the sort
+stops with \code{too many rows to sort — filter first} and the view is shown unsorted. The exact quantiles of a column are computed over at most 5{,}242{,}880 values; past
+that, the statistics window shows the rest without them. \Cref{app:limits} lists every limit.
+
+\begin{tip}
+On a very large file, filter first. A filter is cheap in memory and makes every later sort, statistic
+and export smaller. \code{Z between 400 and 500} on a model of tens of millions of blocks gives a bench
+you can sort and summarise freely.
+\end{tip}
+
+\section{Resident sources}\label{sec:resident}
+
+Some sources aren't windowed: they are decompressed or decoded into memory whole. A workbook, an archive
+of up to 32~MB, a Zstandard, xz or bzip2 file, the sample block model. They behave exactly as a windowed
+file does, only the whole thing is in memory, so they are limited by it, which is why lamina refuses the
+compressed kinds above 32~MB (\cref{sec:archives}). A gzip file or zip entry above 32~MB is read through
+the tape instead (\cref{sec:tape}).

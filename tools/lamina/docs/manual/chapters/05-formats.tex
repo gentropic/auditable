@@ -1,0 +1,172 @@
+\chapter{Formats in detail}\label{ch:formats}
+\begin{goals}
+\textbf{In this chapter} you learn what lamina does with each format beyond delimited text: Excel
+workbooks, Datamine \file{.dm}, Apache Parquet and archives, including what each one can't do and why.
+\end{goals}
+
+Every format below becomes the same thing once it is open: a table of rows and named columns, each
+column a number or text, which the grid, the filter, the calculated columns and the instruments treat
+the same way. What differs is how the rows are reached, and so what costs what.
+
+\section{Excel workbooks}\label{sec:xlsx}
+
+Open an \file{.xlsx} or \file{.xlsm}. If the workbook has one sheet with data, it opens; if it has
+several, lamina lists them with their sizes (\code{12,480 rows × 22 cols}) and you pick one. Empty sheets
+aren't listed. When there are several, the table is called by the workbook and the sheet:
+\file{assays.xlsx › AU}.
+
+The columns arrive typed as Excel typed them. A column is a number because the workbook stores numbers
+in it, not because its text happened to parse, so a column of codes stored as text in Excel stays text,
+leading zeros and all. The first row of the sheet is the header.
+
+A workbook is a zip of XML that has to be decompressed and read whole, so unlike a CSV it is held in
+memory, and lamina refuses one larger than 32~MB (the file's size on disk, compressed):
+\code{workbook too large}. For a sheet that big, save it from Excel as CSV, and lamina windows the CSV at
+any size.
+
+\begin{tip}
+Opening a sheet in lamina is often quicker than starting Excel, and the distribution over each header
+says more about a column at a glance than scrolling it does.
+\end{tip}
+
+\begin{pending}[title={\faHourglassHalf\enskip Every sheet at once}]
+Today a workbook opens one sheet at a time; opening another means opening the workbook again. With
+views and panels (\cref{ch:views}), every sheet will open as a tab.
+\end{pending}
+
+\section{Datamine .dm}\label{sec:dm}
+
+A Datamine \file{.dm} file is a binary table: a page of field definitions, then fixed-length records.
+lamina reads it directly, at any size, with no conversion: the header from the first page, then each
+record by its position. Both Datamine precisions are read (single, with 2048-byte pages and 4-byte
+numbers, and extended, with 4096-byte pages and 8-byte numbers), in either byte order, with the
+extended format's long field names.
+
+\begin{itemize}
+\item \textbf{Numeric fields} are numbers; \textbf{alphanumeric fields} are text, however many words
+they span.
+\item \textbf{File constants}, fields Datamine stores once for the whole file (often \col{XINC},
+\col{YINC}, \col{ZINC} in a regular model), appear as a column with the same value in every row.
+\item \textbf{The missing-value sentinel} ($\pm10^{30}$, Datamine's ``absent'') reads as blank, not as
+a huge number, so it doesn't enter means and sums (\cref{sec:blanks}).
+\end{itemize}
+
+Because every record is the same length and every field sits at the same offset within it, lamina can
+read one column without decoding the others. A filter on a \file{.dm} reads only the fields its
+expression names (\cref{sec:strided}); on a 17-column model filtering on one grade, that is most of the
+file left unread.
+
+\begin{caution}
+A \file{.dm} inside an archive (\file{model.dm.gz}, or a zip holding a \file{.dm}) currently opens as a
+binary file: lamina's archive path doesn't yet recognise Datamine. Decompress it first and open the
+\file{.dm} itself.
+\end{caution}
+
+\section{Apache Parquet}\label{sec:parquet}
+
+Parquet \parencite{parquetformat} is a columnar format: the file is cut into \term{row groups}, each
+storing its columns one after another, compressed, with a footer at the end that describes the schema
+and, for each row group and column, its minimum, maximum and count of missing values.
+
+lamina reads the footer first. The schema comes from it, so a column is numeric because the file says
+so. Then it reads only what it needs: the rows on screen, a few hundred at a time, or for a scan, only
+the columns the scan uses.
+
+\subsection{Types}
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries in the file & \sffamily\bfseries in lamina \\
+\midrule
+integers and floating point & numbers \\
+64-bit integers & numbers, when every value fits a JavaScript number exactly (up to $2^{53}$, about
+$9\times10^{15}$); otherwise the whole column reads as text, so no digit is rounded away \\
+text & text \\
+booleans & the text \code{true} or \code{false} \\
+dates and timestamps & ISO text: \code{2026-03-14}, or \code{2026-03-14T08:30:00Z} with a time \\
+raw bytes & their hexadecimal text \\
+nested columns (struct, list, map) & left out; the popover's facts name them under \ui{left out
+(nested)} \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+\subsection{Compression}
+
+lamina reads Parquet compressed with Snappy, gzip or Zstandard, or not compressed. It refuses LZ4 and
+Brotli by name, before reading any data: \code{compressed with LZ4 — lamina reads Snappy, gzip, zstd or
+uncompressed Parquet}. Their decoders would mean shipping WebAssembly, which lamina doesn't
+(\cref{sec:no-wasm}). Most writers default to Snappy; in pandas, \code{df.to\_parquet(path)} writes
+Snappy unless told otherwise.
+
+\subsection{Row groups and pruning}\label{sec:pruning}
+
+A filter on a Parquet file looks at each row group's footer statistics before reading it. If the
+minimum and maximum of the columns the filter uses show that no row in the group can match, the group is
+skipped unread. On a file sorted or spatially ordered by the filtered column, that can be almost the
+whole file. The host API reports how many groups a filter skipped (\cref{app:host}); in the interface,
+the effect is that the filter is fast.
+
+The skip is conservative: a group is skipped only when the statistics prove no row matches. A filter
+lamina can't reason about from minimum and maximum alone (a \code{matches} pattern, a calculated column)
+reads every group.
+
+\begin{tryit}
+See what a Parquet file says about itself.
+\begin{enumerate}
+\item Write a Parquet file from pandas, or take one you have: \code{df.to\_parquet("model.parquet")}.
+\item Open it in lamina and click the kind badge. The facts give the format, the column count, the
+number of row groups and the compression.
+\item Filter on a column the file is sorted by. Compare how quickly it answers with a filter on a column
+it isn't sorted by.
+\end{enumerate}
+\end{tryit}
+
+\section{Archives}\label{sec:archives}
+
+lamina looks inside an archive and opens an entry without writing anything to disk. What it can do
+depends on the compression, because some decompressors can only start at the beginning and go forward.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries archive & \sffamily\bfseries how it opens \\
+\midrule
+\file{.zip} & up to 32~MB: decompressed in memory, any entry. Larger: the entry list is read by streaming
+through the file, and the chosen entry is read as a stream (below), at any size \\
+\file{.gz} & up to 32~MB: decompressed in memory. Larger: read as a stream, at any size \\
+\file{.tar} & up to 32~MB, in memory; a \file{.tar.gz}, \file{.tar.zst} and so on, up to 32~MB,
+decompress first, then list their entries \\
+\file{.zst}, \file{.bz2}, \file{.xz} & up to 32~MB, in memory; larger ones are refused (\code{archive
+too large}), since the browser has no streaming decoder for them \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+An archive with one entry opens it; one with several lists them, with their sizes, and you pick. The
+table is named by the archive and the entry: \file{survey.zip › collars.csv}.
+
+\subsection{Reading a compressed stream}\label{sec:tape}
+
+A large gzip file or zip entry can't be read from the middle: the decompressor has to start at the
+beginning. lamina reads it through a \term{tape}: one decompressor reading forward, with the most recent
+stretch of output kept in a buffer. Rows near where the tape is are served from the buffer; rows further
+on are reached by reading forward; and rows behind it are reached by starting the decompressor again
+from the top.
+
+So scrolling forward through a 5~GB \file{.csv.gz} is cheap, a filter or a statistic (one forward pass)
+costs what it would on the uncompressed file plus the decompression, and jumping back to the start of a
+huge compressed file costs a re-read from the beginning. Its index is cached like any other file's
+(\cref{sec:index-cache}).
+
+\begin{why}
+Decompressing a large archive to memory would bring back the limit windowing removes; decompressing it to
+disk would need write access lamina doesn't ask for. The tape is the third way: nothing held whole, the
+price paid only when you go backwards. If you will go back and forth through a huge compressed file
+many times, decompress it once outside lamina and open the plain file.
+\end{why}
+
+Entries are recognised as their own formats once decompressed: a CSV inside a zip is a CSV, a Parquet
+inside one is a Parquet (read from memory). A Datamine file inside an archive isn't yet (the caution
+above).

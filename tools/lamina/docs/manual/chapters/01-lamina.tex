@@ -1,0 +1,81 @@
+\chapter{lamina}\label{ch:lamina}
+\begin{goals}
+\textbf{In this chapter} you learn what lamina is for, what it reads, the two things it never does
+(change your file, use the network), and the one idea behind how it handles size.
+\end{goals}
+
+A block model arrives as a 3~GB CSV. A spreadsheet stops at a million rows; a text editor opens it and
+stops responding; a database wants it imported first. lamina opens it in about the time it takes to read
+the file once, shows you its rows, and lets you filter, sort, derive columns and report on it, without
+loading it.
+
+That is the whole purpose: to look at a large table you have been given, find out what is in it, check
+that it is what it claims to be, and take out the part you need. lamina is a \term{viewer}. It reads; it
+doesn't edit.
+
+\section{What it reads}\label{sec:reads}
+
+\begin{description}
+\item[Delimited text] CSV, TSV and any delimited \file{.txt} or \file{.dat}, at any size: comma, tab,
+semicolon, pipe or runs of whitespace; a header row or none; quoted fields; a block of \code{\#}
+comment lines before the header; GSLIB and Geo-EAS files with their column names in a preamble; a
+decimal comma; UTF-8, Windows-1252, Latin-1 or UTF-16 (\cref{ch:open}).
+\item[Datamine \file{.dm}] block models and other Datamine tables, read directly at any size, with no
+conversion step (\cref{sec:dm}).
+\item[Apache Parquet] the columnar format pandas, Polars, DuckDB and Spark write, typed from the file's
+own schema and read by range (\cref{sec:parquet}).
+\item[Excel workbooks] \file{.xlsx} and \file{.xlsm}, one sheet at a time, typed as Excel typed them
+(\cref{sec:xlsx}).
+\item[Archives] \file{.zip}, \file{.tar}, \file{.gz}, \file{.zst}, \file{.bz2} and \file{.xz}: lamina
+looks inside and opens an entry without unpacking the archive to disk (\cref{sec:archives}).
+\item[Anything else] plain text opens as a table of lines; a binary file is named as binary rather than
+shown as noise.
+\end{description}
+
+\section{It never changes your file}\label{sec:read-only}
+
+lamina opens files read-only. Nothing you do in it writes to the file you opened: a filter, a sort, a
+hidden column, a calculated column, a number format, a colour scale. All of these belong to the
+\term{view}, the way you are looking at the table, and they last as long as the window does (or as long
+as a lens keeps them, \cref{ch:lens}).
+
+When you want a file out, \menu{Data>Export…} writes a new one, somewhere you choose
+(\cref{ch:export}). Opening a Datamine \file{.dm} and exporting it is how you convert it to CSV, at any
+size.
+
+\section{It never touches the network}\label{sec:never-network}
+
+lamina is \term{Sealed}. The page carries a browser security policy that forbids every network
+connection, so it cannot send anything anywhere, and it doesn't fetch anything either: no fonts, no
+scripts, no update check, no telemetry. Your data stays in the page, on your machine. The policy is
+part of the file, so you can read it, and the build checks it before every release (\cref{ch:sealed}).
+
+\section{How size stops mattering}\label{sec:windowed}
+
+lamina never holds the whole file. When you open one it reads it once, from start to end, and keeps a
+small index: where every few thousand rows begin. After that, to show you rows 1{,}204{,}000 to
+1{,}204{,}040, it looks up the nearest index entry, reads that stretch of the file, and decodes only
+the rows on screen. Scrolling, jumping to a row and resizing all work this way. A filter, a sort or a
+statistic is one more pass through the file, with only what the pass needs kept in memory: a list of the
+matching rows, the sort keys, the running sums.
+
+So memory stays roughly flat as files grow, and the first look at a file costs one read of it. The
+second time you open the same file, the index comes from a cache and the table is there at once. \Cref{ch:huge} goes through the details and the costs.
+
+\begin{why}
+Windowing is the design, not an optimisation. A tool that loads the file first works until the file is
+bigger than the memory you have, and resource-estimation files routinely are. Reading by windows has a
+cost (a sort needs a pass, and some operations have limits, \cref{app:limits}), but it means there is no
+file size at which lamina stops working.
+\end{why}
+
+\section{What it is not}
+
+lamina is not a spreadsheet: cells can't be edited and there are no formulas in cells, only calculated
+columns derived from a whole row. It is not a database: it doesn't join tables or keep anything once you
+close it. It is not a 3D viewer: micro, its sibling, is the tool for seeing a block model in space. And it is not a geostatistics package: it reports and
+checks, it doesn't estimate.
+
+What it is, is the first thing to open when a file arrives. Within a minute you know how many rows and
+columns it has, what each column holds, which values are missing, whether the codes kept their leading
+zeros, how the grades are distributed, and how much tonnage sits above a cutoff.

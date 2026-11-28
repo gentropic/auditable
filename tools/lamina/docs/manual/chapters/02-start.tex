@@ -1,0 +1,133 @@
+\chapter{Getting started}\label{ch:start}
+\begin{goals}
+\textbf{In this chapter} you open lamina and its sample block model, learn the parts of the window and
+where the actions live, and spend a first ten minutes asking the sample questions.
+\end{goals}
+
+\section{The empty screen}\label{sec:empty}
+
+lamina opens on an empty screen that says what it takes: \ui{Open…}, or drag a file anywhere onto the
+window. Below that are a link to the sample block model, a line about verifying lamina before using it at
+work (\cref{ch:sealed}), and, once you have opened a few files, chips for the most recent ones
+(\cref{sec:recents}).
+
+\shot{empty}{The empty screen: what lamina opens, the sample block model, and the files opened
+recently.}
+
+\section{The sample block model}\label{sec:sample}
+
+Click \ui{▸ open a sample block model}. lamina generates a block model in the page, on your machine,
+and opens it as \file{sample\_blockmodel.csv}: 120{,}000 blocks of $10 \times 10 \times 5$~m in a grid
+60 blocks east, 50 north and 40 high, with a copper–gold orebody in the middle. Nothing is downloaded:
+the generator is a few lines inside lamina, so the sample is the same every time, on any machine, offline.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}>{\ttfamily}lL@{}}
+\toprule
+\normalfont\sffamily\bfseries column & \sffamily\bfseries holds \\
+\midrule
+ID & the block number, 1 to 120{,}000 \\
+X, Y, Z & the block centroid: X from 620{,}000, Y from 7{,}780{,}000, Z from 400~m \\
+dx, dy, dz & the block size: 10, 10 and 5~m everywhere \\
+Au\_gpt, Cu\_pct, Ag\_gpt, Fe\_pct & gold (g/t), copper (\%), silver (g/t), iron (\%) \\
+density & the dry bulk density, t/m³, about 2.4 to 3.0 \\
+ore\_pct & the proportion of the block that is ore, 0 to 1 \\
+recovery & a metallurgical recovery, \% \\
+LITO & WASTE, OXIDE, TRANSITION or SULPHIDE \\
+ZONE & Z1 to Z5, by depth \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The model is generated from the top down, so its first rows are the waste above the orebody. So that the
+first thing you see isn't a page of zeros, lamina opens the sample sorted by \col{Cu\_pct}, highest
+first, with that column coloured as a heat map.
+
+\shot{overview}{The sample block model, sorted by copper grade with \col{Cu\_pct} as a heat map. Above
+each column header is a small drawing of the column's distribution.}
+
+\section{The window}\label{sec:window}
+
+\begin{description}
+\item[The menu bar] (top left): \menu{File}, \menu{Data}, \menu{Tools}, \menu{View} and \menu{Help}
+(\cref{sec:menus}).
+\item[The filter box] beside it. Type a condition such as \code{Cu\_pct > 0.5 and LITO = "SULPHIDE"}
+and press \key{Enter} (\cref{ch:filter}). The \ui{×} clears it, \ui{▾} opens the filter as a set of
+controls (\cref{sec:drawer}), and \ui{Filter} applies it, as \key{Enter} does.
+\item[\ui{ƒ+ col}] adds a calculated column (\cref{ch:calc}).
+\item[\ui{Σ stats}] summarises every column in one pass (\cref{sec:summary}); its \ui{▾} offers to do the
+pass without opening the summary.
+\item[The row box] jumps to a row: type a number and press \key{Enter}.
+\item[The file name and the kind badge] (top right). The badge says how lamina read the file:
+\ui{CSV · delimited}, \ui{dm}, \ui{parquet}, \ui{text}, \ui{binary}. Click it to change how the file is
+read (\cref{sec:interpretation}).
+\item[The grid] fills the rest: a header row with a distribution drawn above each column, row numbers
+down the left, and the rows (\cref{ch:grid}).
+\item[The status line] (bottom left). What you are looking at, kept current:
+\code{120,000 rows · sorted by Cu\_pct ↓ × 16 cols · 9.5 MB · delimited}. With a filter on, it starts
+with the count of matches: \code{5,362 of 120,000 rows (filtered)}. While a long scan runs, it shows the
+scan's progress and that \key{Esc} cancels it.
+\item[The selection line] beside it, when you have cells selected: their count and, for numbers, their
+sum, mean, minimum and maximum (\cref{sec:selection}).
+\item[The build stamp] (bottom right): \code{0.1.0 · b31bbe3 · 2026-11-27}, the version, a hash of
+lamina's code, and the date it was built. It is the quick way to tell two copies of lamina apart
+(\cref{sec:verify}).
+\end{description}
+
+\section{The menus}\label{sec:menus}
+
+\begin{description}
+\item[\menu{File}]\index{menus!File} open a file; open a second lamina window; the recent files and
+whether to remember them (\cref{sec:recents}).
+\item[\menu{Data}]\index{menus!Data} the file and its view: how it is read
+(\menu{Data>Interpretation (delimiter / header / skip)…}), export, save and apply a lens, the calculated
+columns, clear the filter or the sort, and how a brush on a distribution applies
+(\cref{sec:brush-modes}).
+\item[\menu{Tools}]\index{menus!Tools} the instruments: \ui{Column summary (Σ stats)…},
+\ui{Group by…}, \ui{Grade–tonnage…}, \ui{Grid summary…}, \ui{Data quality…} (Part~V).
+\item[\menu{View}]\index{menus!View} the distributions above the columns and whether skewed ones are
+drawn on a log scale; scrolling locked to one axis; the theme; the columns panel and the record
+inspector; go to row; column widths; show all columns.
+\item[\menu{Help}]\index{menus!Help} short guides to getting started, the filter, the analyses and the
+keys; a link to this manual on the web; and \ui{About lamina}, with the build stamp.
+\end{description}
+
+Most of what you do to a column or a cell is on the right-click menu, not the menu bar. Right-click a
+column header for sort, statistics, filter, number format, colour scale, text or number, hide, and
+calculated columns. Right-click a cell for copy, filter by this value, statistics and the record
+inspector.
+
+\section{Recent files}\label{sec:recents}
+
+lamina remembers the files you open, up to twelve, and lists the last ten at the foot of the
+\menu{File} menu and on the empty screen. Choosing one reopens it. Where the browser lets lamina keep a
+handle to the file (Chrome and Edge, when you opened it with \ui{Open…}), the browser asks you once to
+allow lamina to read it again, and the file opens. Where it doesn't (a file you dropped, or another
+browser), the entry carries a \ui{↻} and choosing it asks you to pick the file again: lamina never reads
+a file you haven't just given it.
+
+\menu{File>Clear recents} empties the list. \menu{File>Remember recent files} turns the list off
+altogether, and clears it. On a shared computer, leave it off.
+
+\section{The theme}
+
+\menu{View>Theme} chooses \ui{Auto (system)}, \ui{Dark} or \ui{Light}. Auto follows the operating
+system's setting and changes with it. The choice is kept for the next time you open lamina.
+
+\begin{tryit}
+A first ten minutes with the sample.
+\begin{enumerate}
+\item Open the sample from the empty screen. The status line reads \code{120,000 rows · sorted by
+Cu\_pct ↓}.
+\item Click in the filter box, type \code{LITO = "SULPHIDE" and Cu\_pct > 1} and press \key{Enter}. The
+status line counts the matches.
+\item Double-click the distribution above \col{Au\_gpt}. A statistics window shows the gold grades of
+the matching blocks only: their count, mean, quantiles and histogram.
+\item Close it. Press \key{Esc} in the filter box to clear the filter.
+\item Open \menu{Tools>Grade–tonnage…} and click \ui{Report}. lamina has already filled in volume
+(\code{dx * dy * dz}), density and ore proportion from the column names. You get tonnes and grade by
+lithology, and a curve of tonnes and grade above each cutoff.
+\item Open \menu{Tools>Data quality…}. Three flags: \col{dx}, \col{dy} and \col{dz} are constant.
+For a regular block model, that is the right answer.
+\end{enumerate}
+\end{tryit}

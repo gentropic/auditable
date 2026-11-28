@@ -1,0 +1,158 @@
+\chapter{The grid}\label{ch:grid}
+\begin{goals}
+\textbf{In this chapter} you learn everything the table itself does: scrolling, sorting, selecting and
+copying, widths, number formats, colour scales, hiding and freezing columns, the record inspector and
+find.
+\end{goals}
+
+The grid shows the current view: the whole file, or what the filter keeps, in the order the sort gives.
+Row numbers down the left are the row's position in that view. Above each column header is a small
+drawing of the column's distribution, which \cref{ch:gutter} covers.
+
+\section{Scrolling and moving}\label{sec:scrolling}
+
+Scroll with the wheel, the trackpad or the scrollbars, at any depth: only the rows on screen are read
+(\cref{sec:screenful}). Type a row number in the row box on the toolbar and press \key{Enter} to jump to
+it (\menu{View>Go to row…} puts the cursor in that box).
+
+A trackpad or a trackball rarely scrolls straight, so by default each scroll gesture is locked to the
+axis it starts on: start down and you scroll down only. \menu{View>Lock scroll to one axis} turns that
+off.
+
+\section{Sorting}\label{sec:sort}
+
+Click a column header to sort by it: ascending, then descending, then back to the file's order. The
+header shows an arrow, and the status line says \code{sorted by Cu\_pct ↓}.
+
+To sort by more than one column, right-click the second column's header and choose \ui{Then by …↑} or
+\ui{Then by …↓}: the rows keep the first order, and the second breaks its ties. Add as many keys as you
+like the same way. \ui{Clear sort} on the same menu, or \menu{Data>Clear sort}, returns to the file's
+order.
+
+Numbers sort as numbers and text sorts as text. Blank values sort last, whichever direction. Rows that
+tie on every key keep their order in the file.
+
+A sort is a scan (\cref{sec:scans}): on a large file the status line counts it, and \key{Esc} cancels
+it. With a filter on, the sort orders only the matches.
+
+\section{Selecting and copying}\label{sec:selection}
+
+Click a cell to select it; drag, or \key{Shift}-click, to select a block of rows and columns. The
+selection line in the status bar shows how many cells are selected and, over the numbers among them,
+their sum, mean, minimum and maximum: \code{sel 200 · Σ 566.502 · x̄ 2.83251 · min 0.267 · max 7.983}. For
+a very large selection it is computed over the first 50{,}000 cells.
+
+\key{Ctrl}+\key{C} copies the selection as tab-separated text, which pastes into a spreadsheet as cells.
+The cell's right-click menu also copies it \ui{with header}, \ui{with row \#}, or both.
+
+\section{Column widths}
+
+Drag the border at the right of a column header to resize the column; double-click it to fit the column
+to its contents. \menu{View>Autofit all columns} fits every column, and \menu{View>Reset column widths}
+goes back to the defaults.
+
+\section{Number formats}\label{sec:formats}
+
+Right-click a number column's header and choose \ui{Number format}: \ui{Auto}, \ui{0 decimals},
+\ui{2 decimals}, \ui{3 decimals}, \ui{4 decimals}, \ui{Scientific} or \ui{Thousands (1,234)}. The format
+changes only what the grid shows. Filters, statistics and exports use the values as they are in the
+file.
+
+\section{Text or number}\label{sec:text-number}
+
+lamina decides from a sample of each column whether it holds numbers or text. When it decides wrong, the
+header's menu changes it: \ui{Treat as text} or \ui{Treat as number}. The usual case is a column of codes
+that look like numbers (\code{007}, \code{012}): read as numbers they lose their leading zeros and sort
+by value. As text they keep them. \Cref{ch:dq} finds such columns for you.
+
+\section{Colour scales}\label{sec:colour-scales}
+
+Right-click a number column's header and choose \ui{Color scale}, then \ui{On}: each cell is painted by
+its value. Patterns in a million rows read at a glance this way: the high grades, the empty stretches,
+the sentinel values.
+
+\begin{description}
+\item[\ui{Palette}] Viridis (the default), Magma, Inferno, Plasma, Turbo, Cividis, Grayscale, and
+Blue–red, a diverging palette for values either side of a middle.
+\item[\ui{Scale}] Linear or Log. A log scale suits grades, which are usually skewed; it needs positive
+values, so a range starting at zero is given a small positive floor.
+\item[\ui{Clip outliers (p5–p95)}] stretches the palette over the 5th to 95th percentiles instead of the
+whole range, so a few extreme values don't flatten the rest into one colour.
+\item[\ui{Reverse}] runs the palette the other way.
+\end{description}
+
+Choosing any of these turns the scale on with that setting. The range is taken from the sample behind
+the column's distribution (\cref{ch:gutter}), or, with clipping, from percentiles of the column.
+
+\begin{caution}
+\ui{Clip outliers} currently takes its percentiles from the first 8{,}192 rows of the file rather than
+from a sample spread through it. On a file whose first rows are unlike the rest (a block model written
+from the top down starts with the waste above the orebody) the range comes out far too narrow and most
+cells take the top colour. The sample model opens this way. Turn clipping off, or use a log scale, until
+it is fixed.
+\end{caution}
+
+\section{Hiding columns}
+
+\ui{Hide …} on a header's menu hides the column; the same menu then lists the hidden columns, to show
+them again, and \ui{Show all columns}. Hidden columns are still there: filters and calculated columns
+can use them, and an export can include them (\cref{ch:export}).
+
+\section{The columns panel}\label{sec:columns-panel}
+
+\menu{View>Columns…} opens a panel on the right listing every column, for a table with more columns than
+fit on the screen.
+
+\shot[0.5\linewidth]{columns-panel}{The columns panel: search, show and hide, the type of each column,
+drag handles to reorder, and a pin to freeze a column.}
+
+\begin{itemize}
+\item The search box narrows the list as you type.
+\item The checkbox beside each column shows or hides it; \ui{Show all}, \ui{Hide all} and \ui{Invert}
+act on every column.
+\item \ui{\#} or \ui{abc} gives the column's type; a percentage gives the share of blanks in the sample.
+\item Drag a column by its \ui{⠿} handle to reorder the grid's columns.
+\item Click a column's name to scroll the grid to it.
+\item The pin, \ui{\faThumbtack}, \term{freezes} the column: it is moved to the left of the grid and stays there as you
+scroll sideways. Freeze the identifiers (\col{ID}, \col{X}, \col{Y}, \col{Z}) of a wide model and they stay
+in view. \ui{⋯} opens the column's header menu.
+\end{itemize}
+
+Drag the panel's left edge to make it wider; the width is remembered.
+
+\section{The record inspector}\label{sec:inspector}
+
+\menu{View>Record inspector…}, or \ui{Inspect this row…} on a cell's menu, opens a panel listing one row
+as name and value, one field per line: the way to read a row with forty columns. It follows the selected
+row. \ui{↑} and \ui{↓} step through rows; \ui{⧉} copies the record as tab-separated text.
+
+\ui{⊙} pins the current record. Then step to another and the panel shows the two side by side, the pinned
+one and the current one, so you can compare two blocks or two samples field by field.
+
+\section{Find}\label{sec:find}
+
+\key{Ctrl}+\key{F} opens the find bar. Type, and \key{Enter} jumps to the next cell that contains the
+text, \key{Shift}+\key{Enter} to the previous one.
+
+\begin{description}
+\item[\ui{Aa}] match case.
+\item[\ui{⊏⊐}] whole cell: the cell must be exactly the text, not just contain it.
+\item[\ui{.*}] a regular expression.
+\item[\ui{col}] search only the selected column.
+\item[\ui{\#}] count every matching row. That is a scan of the whole view.
+\end{description}
+
+Find moves the cursor through the view; it doesn't narrow it. To keep only the rows that match, use the
+filter (\cref{ch:filter}): \code{LITO contains "SULPH"}.
+
+\begin{tryit}
+Read the sample's richest block.
+\begin{enumerate}
+\item Open the sample; it is sorted by \col{Cu\_pct}, highest first.
+\item Right-click any cell of the first row and choose \ui{Inspect this row…}. The record inspector
+lists the block: \col{Cu\_pct} 7.983, \col{LITO} SULPHIDE.
+\item Click \ui{⊙} to pin it, then \ui{↓}. The inspector shows the second-richest block beside the first.
+\item Right-click the \col{Au\_gpt} header, then \ui{Then by Au\_gpt ↓}: ties on copper, if any, now
+put the higher gold first.
+\end{enumerate}
+\end{tryit}

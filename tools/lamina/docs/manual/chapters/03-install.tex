@@ -1,0 +1,95 @@
+\chapter{Installing and running}\label{ch:install}
+\begin{goals}
+\textbf{In this chapter} you choose how to run lamina (a web address, an installed app, or the file
+itself), learn what it keeps on your machine between sessions, and how to clear it.
+\end{goals}
+
+lamina is one HTML file. Every way of running it runs that file; they differ only in how it reaches you
+and what the browser lets it do around it.
+
+\section{From the web}
+
+lamina is published at \file{gentropic.org/lamina}. Open the address in a current Chrome, Edge or
+Firefox and it runs. Opening the page doesn't send your data anywhere: the files you open are read by
+the page, in the browser, and the page can't make network connections (\cref{ch:sealed}).
+
+\subsection{Installing it as an app}
+
+Chrome and Edge offer to install the page as an app (the install icon at the end of the address bar).
+Installed, lamina opens in its own window, without the browser's tabs and toolbar, and works offline:
+the page keeps a copy of itself so it starts with no connection. When a newer lamina has been published,
+the installed copy picks it up on a later start.
+
+\subsection{The Microsoft Store}
+
+On Windows, lamina is also in the Microsoft Store as \emph{GCU Lamina}. It is the same page, packaged as
+an installed app. The Store version and the browser-installed version are the same lamina; choose
+whichever your machine's policy allows.
+
+\section{The file itself}\label{sec:single-file}
+
+The empty screen offers \ui{download lamina.html}. That file is all of lamina: keep it in a folder, copy
+it onto a shared drive, attach it to an e-mail, and open it by double-clicking. It runs from the disk
+(the address starts \file{file://}), with no installation and no server, on a machine with no network at
+all.
+
+Two things differ when lamina runs from the disk:
+
+\begin{itemize}
+\item Browsers don't let a page on \file{file://} start background workers from inside itself, so lamina
+indexes a file on the page's own thread instead. The result is the same; on a very large file the page
+is less responsive while the index is built, and the status line counts the progress.
+\item Chrome and Edge give a page on \file{file://} the same file-picker and save-dialog access as one on
+the web, so recents and export work as usual (\cref{sec:recents}, \cref{ch:export}). Firefox has no
+save dialog for pages, so an export there is downloaded instead.
+\end{itemize}
+
+\begin{tip}
+The file on disk is the one to choose when a machine is locked down or air-gapped, or when you need to
+show someone exactly which lamina you used. Its build stamp and its SHA-256 identify it
+(\cref{sec:verify}).
+\end{tip}
+
+\section{More than one window}
+
+\menu{File>New window} opens a second lamina, with nothing open in it. Each window holds its own file.
+The two don't share anything but the recents list and the index cache.
+
+\section{Inside the lead-acid shell}
+
+On an Android phone, lamina also runs inside lead-acid, the GCU app that hosts GCU tools with access to
+the phone's files. There, \emph{Open with} lamina from the phone's file manager or a \emph{Share} to
+lamina opens the file in place, read by range from the phone's storage rather than copied, and exports
+go to the phone's \file{Downloads} folder, from where they can be shared. Everything else is as on a
+computer.
+
+\section{Inside another page}
+
+A web page can embed lamina in a frame and drive it: open a file, apply a filter, read rows back. That is
+for people building tools around lamina; \cref{app:host} documents it.
+
+\section{What lamina keeps on your machine}\label{sec:local-state}
+
+lamina remembers a few things between sessions, all in the browser's own storage for the page, on this
+machine. None of it can leave it.
+
+\begin{center}\small
+\begin{tabularx}{\linewidth}{@{}lL@{}}
+\toprule
+\sffamily\bfseries what & \sffamily\bfseries why, and how to remove it \\
+\midrule
+the index of each file opened & so a file opens at once the second time (\cref{sec:index-cache}); keyed
+by the file's name, size and modification time, so a changed file is indexed afresh. Holds where rows
+start, not their contents. \\
+the recent files & names and, where the browser allows, handles to reopen them with permission
+(\cref{sec:recents}). \menu{File>Clear recents}, or turn \menu{File>Remember recent files} off. \\
+your settings & the theme, whether distributions are drawn and log-scaled, scroll lock, the brush mode,
+the width of the side panels. \\
+\bottomrule
+\end{tabularx}
+\end{center}
+
+The index cache and the settings go when you clear the site's data in the browser (in Chrome and Edge,
+the padlock or page-info icon in the address bar, then \emph{Site settings} and \emph{Delete data}).
+Each copy of lamina keeps its own: lamina from the web, the installed app, and \file{lamina.html} on
+disk are different origins to the browser.

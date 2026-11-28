@@ -1,0 +1,23 @@
+\chapter{The raw view}\label{ch:raw}
+\begin{goals}
+\textbf{In this chapter} you will look at any file's bytes as they are, as lines or as hex, and move
+between a row in the grid and the bytes it was read from.
+\end{goals}
+
+\begin{pending}
+This chapter waits on the raw view, which is being built (the workspace plan,
+\file{spec\_inbox/lamina-workspace-spec.md}, §3). It will cover:
+\begin{itemize}
+\item \textbf{Lines}: line numbers and byte offsets; CR, LF, CRLF, tabs, the BOM and control characters
+made visible; bytes that don't decode in the chosen encoding marked; no wrapping, horizontal scroll.
+\item \textbf{Hex}: sixteen bytes a row, offset · hex · text, for any file, binary ones included.
+\item \textbf{Search}: the find bar in both; in lines, the filter as grep, and export of what it keeps.
+\item \textbf{The jumps}: from a grid row to its bytes (\ui{Show raw}), from a line back to its row,
+between lines and hex at the same offset.
+\item \textbf{Compressed and in-memory sources}: offsets in decompressed space; a workbook sheet's
+container bytes.
+\item \textbf{The interpretation dialog's raw pane}: setting the delimiter, header and skipped lines
+while looking at the real first lines.
+\item \textbf{Data quality into raw}: from a flag to the bytes it is about.
+\end{itemize}
+\end{pending}

@@ -1,0 +1,32 @@
+% THE COVER — a GCU field manual, in the series' house style (wuffle's cover/README.md): basalt ground, the
+% kicker, the name in the display face, the amber rule, the subtitle, a caption at the foot saying exactly
+% what the figure is. The FIGURE is not chosen yet (the idea on the table: a varved sediment core whose
+% laminae are the rows of a table, heat-map coloured, one bright band lifted out as a filter lifts its rows).
+% Until it exists the page carries a placeholder frame where it will sit: drop cover/cover.jpg in and it
+% takes the frame's place.
+\begin{titlepage}
+\begin{tikzpicture}[remember picture, overlay]
+  \fill[basalt] (current page.south west) rectangle (current page.north east);
+  \IfFileExists{cover/cover.jpg}{%
+    \node[inner sep=0pt, anchor=center] at ([xshift=8mm, yshift=70mm]current page.south east)
+      {\includegraphics[width=300mm]{cover/cover.jpg}};
+  }{%
+    \node[draw=basalttext!45, dashed, line width=0.6pt, minimum width=120mm, minimum height=110mm, text=basalttext!70, font=\displaylight\small, align=center]
+      at ([xshift=-82mm, yshift=96mm]current page.south east) {the cover figure\\[1mm]\footnotesize(not chosen yet)};
+  }
+  \node[anchor=north west, inner sep=0pt, text=amberlight, font=\displayfont\small\addfontfeatures{LetterSpace=18}]
+    at ([xshift=24mm, yshift=-40mm]current page.north west) {A GCU FIELD MANUAL};
+  \node[anchor=north west, inner sep=0pt, text=white, font=\displayfont\fontsize{110}{110}\selectfont]
+    at ([xshift=21mm, yshift=-52mm]current page.north west) {lamina};
+  \fill[amberlight] ([xshift=24mm, yshift=-93mm]current page.north west) rectangle ([xshift=64mm, yshift=-94.4mm]current page.north west);
+  \node[anchor=north west, inner sep=0pt, text=basalttext, text width=118mm, font=\displaylight\fontsize{19}{25}\selectfont]
+    at ([xshift=24mm, yshift=-101mm]current page.north west) {a windowed viewer\\for very large tables};
+  \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=64mm, font=\sffamily\scriptsize, align=left]
+    at ([xshift=24mm, yshift=36mm]current page.south west)
+    {\IfFileExists{cover/cover.jpg}{\textcolor{amberlight}{Cover.} % TODO: the caption, when the figure exists
+    }{\textcolor{amberlight}{Cover.} The figure is still to come.}};
+  \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=84mm]
+    at ([xshift=24mm, yshift=20mm]current page.south west)
+    {Geoscientific Chaos Union\enskip·\enskip gentropic.org/lamina\\[1mm]\textcolor{faint}{\today}};
+\end{tikzpicture}
+\end{titlepage}

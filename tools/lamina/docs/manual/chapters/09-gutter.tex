@@ -1,0 +1,98 @@
+\chapter{Column distributions}\label{ch:gutter}
+\begin{goals}
+\textbf{In this chapter} you learn to read the small drawing above each column header, and to use it:
+hover to read a value, click to filter, drag to filter a range, double-click for the full statistics.
+\end{goals}
+
+Above every column header lamina draws the column's distribution: a histogram for a number column, a bar
+of its most common values for a text one, and a thin bar showing how much of it is blank. They are
+drawn when the file opens, so the first thing you see of a new file is the shape of every column in it.
+\menu{View>Column distributions} turns them off and on.
+
+\shot{gutter}{The distributions over the sample's columns: histograms for the grades (log-scaled, marked
+\ui{log}), a bar of the four lithologies over \col{LITO}, and flat glyphs over the constant block sizes.}
+
+\section{What they show}\label{sec:glyphs}
+
+\begin{description}
+\item[A histogram] for a number column: 22 bars between the column's minimum and maximum.
+\item[A top-values bar] for a text column: the eight most common values as coloured segments, each as
+wide as its share.
+\item[The blank bar] under either: its share of the column that is empty.
+\item[\ui{≈}] the glyph is drawn from a sample, not the whole file (below).
+\item[\ui{log}] the histogram is drawn on a log scale of value.
+\end{description}
+
+\subsection{The sample}\label{sec:gutter-sample}
+
+On a file of more than 8{,}192 rows, the distributions are drawn from a sample of 8{,}192 rows: 48 short
+runs of consecutive rows, spread evenly from the start of the file to its end. Spread, because a file is
+often ordered (a block model by elevation, an assay table by hole), and the first rows alone would show
+one corner of it. The sample is read when the file opens, a few blocks of the file, and costs little at
+any size.
+
+A sample can miss rare values: a handful of high grades in ten million blocks may not be in it, and the
+histogram's maximum is then the sample's. For exact figures, double-click the glyph (\cref{ch:stats}).
+
+\subsection{Log scale}\label{sec:auto-log}
+
+Grades are usually skewed: most values small, a long tail of large ones. On a linear histogram the tail
+squeezes everything else into the first bar. So when a number column is skewed, lamina draws it on a
+log scale and marks it \ui{log}.
+
+The test is made on the sample's positive values (zeros are common in a grade column, and are set aside;
+more than 2\% negative values rules a log scale out): when their skewness is above 1.5 and taking logs
+reduces it by more than half a unit, the column is drawn on a log scale. \menu{View>Auto log-scale skewed
+columns} turns the test off. For one column, the header's menu has \ui{Log distribution} to switch it by
+hand.
+
+\section{With a filter on}\label{sec:gutter-filtered}
+
+When a filter is on, each glyph shows the matching rows' distribution over the whole column's, so you
+see where the filtered rows sit in each column: filter to \code{LITO = "SULPHIDE"} and the \col{Z}
+histogram shows the sulphide at depth, the \col{Cu\_pct} one its share of the high grades.
+
+\section{Using them}\label{sec:gutter-use}
+
+\begin{description}
+\item[Hover] shows the value under the pointer: on a histogram, the value at that point of the axis
+(\code{≈ 0.42}); on a top-values bar, the value and its share of the sample (\code{SULPHIDE · 27\%}).
+\item[Click] filters to it: a histogram bar gives \code{Cu\_pct between 0.36 and 0.73}, a text
+segment \code{LITO == "OXIDE"}. The filter box shows the expression, so you can edit it.
+\item[Drag] across a histogram filters to the range you drag over; across a top-values bar, to the
+values it covers (\code{LITO in ("SULPHIDE", "TRANSITION")}). While you drag, a tooltip shows the range.
+\item[Double-click] opens the column's statistics (\cref{sec:one-column}).
+\end{description}
+
+On a log-scaled histogram, a click or a drag is mapped through the log scale, so the range you get is the
+one you see. The numbers are rounded to a few significant figures, which is what you would have typed.
+
+\subsection{When the filter runs}\label{sec:brush-modes}
+
+A click or a drag on a large file starts a scan, and dragging a slightly different range would start
+another. \menu{Data>Gutter brush} chooses what happens:
+
+\begin{description}
+\item[\ui{Auto (apply if small, stage if huge)}] the default. On a view of fewer than 2~million rows the
+filter applies when you let go. On a larger one, the expression is written into the filter box and the
+status line says \code{filter staged — press Enter to apply}: adjust it if you like, then press
+\key{Enter}.
+\item[\ui{Apply on release}] always apply when you let go.
+\item[\ui{Stage (press Enter to run)}] never apply by itself.
+\end{description}
+
+The setting governs clicks and drags on histograms. A click or a drag on a top-values bar always applies
+at once.
+
+\begin{tryit}
+Find where the sulphide sits.
+\begin{enumerate}
+\item Open the sample. Hover over the top-values bar above \col{LITO}: four segments, WASTE the widest.
+\item Click the SULPHIDE segment. The filter box reads \code{LITO == "SULPHIDE"} and the status line
+counts the matches.
+\item Look at the \col{Z} histogram: the matching rows are drawn over the column's, all at depth.
+\item Drag across the upper half of the \col{Cu\_pct} histogram. The filter becomes a range of copper.
+It replaces the lithology filter: a brush writes a new filter rather than adding to the old one. To keep
+both, edit the filter box: \code{LITO = "SULPHIDE" and Cu\_pct > 1}.
+\end{enumerate}
+\end{tryit}

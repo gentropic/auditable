@@ -1,0 +1,5 @@
+# latexmk settings for the lamina manual (read from this folder by `node build.mjs pdf`)
+# the index uses the house style file; latexmk runs makeindex inside build/, so the path is absolute
+use Cwd;
+my $ist = getcwd() . '/style/lamina.ist';
+$makeindex = "makeindex -s \"$ist\" %O -o %D %S";

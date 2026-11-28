@@ -1,0 +1,22 @@
+% The lamina manual — LuaLaTeX. Build: node build.mjs (figures, then latexmk -lualatex).
+\documentclass[11pt, twoside, open=right, parskip=false, headings=standardclasses, numbers=noendperiod, toc=index]{scrbook}
+\usepackage{style/lamina}
+
+\title{lamina}
+\subtitle{a windowed viewer for very large tables}
+\author{Geoscientific Chaos Union}
+\date{\today}
+
+\begin{document}
+\frontmatter
+\input{chapters/00-title}
+\tableofcontents
+\input{chapters/00-preface}
+
+\mainmatter
+\input{chapters/index}
+
+\backmatter
+\printbibliography[heading=lamina, title=References]
+\printindex
+\end{document}
