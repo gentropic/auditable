@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<!-- lamina, DD-60 edition — a GCU DD-60 "DADA Diskman" that reads files of any size, as lamina does.
+     An easter egg at gentropic.org/lamina/dd60/. Part of the Auditable project. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<!-- Networkless by construction, as lamina: connect-src 'none' bans all egress; the runtime is in the clear. -->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data:; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b0c0d">
+<title>DADA Diskman · lamina</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='5' y='2' width='22' height='28' rx='3' fill='%2334373b'/%3E%3Crect x='8' y='5' width='16' height='12' fill='%23c6d197'/%3E%3C/svg%3E">
+<style>
+  html, body { margin: 0; min-height: 100%; background: radial-gradient(120% 100% at 50% -10%, #1d1f22, #090a0b 70%); }
+  body { overflow-x: hidden; }
+  /* what lamina draws on the LCD */
+  .lgrid { position: absolute; inset: 0; padding: 4px 8px 0; font-size: 11px; line-height: 15.5px; white-space: pre; overflow: hidden; }
+  .lgrid .hd { color: var(--lcd-hi); font-weight: 700; border-bottom: 1px solid rgba(31,58,114,.28); }
+  .lgrid .hd .cc { background: var(--lcd-hi); color: var(--lcd-bg); }
+  .lgrid .r { color: var(--lcd-ink); }
+  .lgrid .r.cur { background: var(--lcd-hi); color: var(--lcd-bg); }
+  .lgrid .r.cur .cc { text-decoration: underline; }
+  .lgrid .rn { color: var(--lcd-dim); }
+  .lgrid .r.cur .rn { color: rgba(198,209,151,.8); }
+  .lgrid .bm { color: #b1381f; }
+  .lmsg { position: absolute; inset: 0; display: flex; flex-direction: column; justify-content: center; gap: 8px; padding: 14px 18px; font-size: 11.5px; line-height: 1.5; color: var(--lcd-ink); cursor: pointer; }
+  .lmsg b { color: var(--lcd-hi); }
+  .lmsg .bar { height: 8px; border: 1px solid var(--lcd-hi); } .lmsg .bar i { display: block; height: 100%; background: var(--lcd-hi); }
+  .ov-title { flex: none; padding: 0 12px 6px; font-size: 11px; color: var(--lcd-hi); font-weight: 700; border-bottom: 1px solid rgba(31,58,114,.28); margin-bottom: 4px; letter-spacing: .5px; display: flex; justify-content: space-between; }
+  .ov-title .mode { font-weight: 400; color: var(--lcd-dim); }
+  .ov-input { flex: none; margin: 4px 12px; padding: 3px 6px; font: inherit; font-size: 12px; color: var(--lcd-ink); background: rgba(31,58,114,.08); border: 1px solid rgba(31,58,114,.45); border-radius: 1px; outline: none; }
+  .ov-input:focus { border-color: var(--lcd-hi); }
+  .ov-hint { flex: none; padding: 2px 12px; font-size: 9.5px; color: var(--lcd-dim); white-space: pre-wrap; }
+  .ov-err { flex: none; padding: 2px 12px; font-size: 10px; color: #a3301b; white-space: pre-wrap; }
+  .ov-list { flex: 1; overflow: auto; padding: 0 0 4px; scrollbar-width: thin; scrollbar-color: var(--lcd-hi) rgba(31,58,114,.14); }
+  .ov-row { padding: 2px 12px; font-size: 11px; color: var(--lcd-ink); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; display: flex; justify-content: space-between; gap: 10px; }
+  .ov-row .v { color: var(--lcd-hi); }
+  .ov-row.sel { background: var(--lcd-hi); color: var(--lcd-bg); } .ov-row.sel .v { color: var(--lcd-bg); }
+  .ov-raw { flex: 1; overflow: auto; padding: 4px 12px; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; color: var(--lcd-ink); }
+  .ov-raw .eol { color: var(--lcd-dim); }
+  .drop { position: fixed; inset: 0; display: none; place-items: center; background: rgba(9,10,11,.7); color: #c6d197; font: 700 18px 'Courier New', monospace; z-index: 50; pointer-events: none; }
+  body.dragging .drop { display: grid; }
+</style>
+<!-- dev only (the build strips it and inlines the modules) -->
+<script type="importmap">
+{ "imports": {
+  "@gcu/lamina": "../../ext/lamina/index.js",
+  "@gcu/expr":   "../../ext/expr/index.js"
+} }
+</script>
+</head>
+<body>
+<div class="drop">drop a file to read it</div>
+<input type="file" id="pick" style="display:none">
+<script type="module" src="./js/app.js"></script>
+</body>
+</html>

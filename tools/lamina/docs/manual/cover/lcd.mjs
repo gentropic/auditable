@@ -40,7 +40,7 @@ const png = await p.evaluate(() => {
     g.fillRect(X.bar, y + 2, Math.round(Math.min(1, row.cu / 2.5) * 70), 4);   // the grade as an LCD bar
   }
   // the F-key tab bar, inverse
-  const tabs = ['FILTER', 'SORT', 'RAW', 'LENS', 'MENU'];
+  const tabs = ['FILTER', 'GO TO', 'RAW', 'STATS', 'MENU'];   // the DD-60 edition's own F-keys (gentropic.org/lamina/dd60)
   g.fillStyle = inv; g.fillRect(0, H - 12, W, 12);
   tabs.forEach((t, i) => { g.fillStyle = lime; g.fillText(t, 6 + i * 51, H - 10); if (i) { g.fillRect(i * 51, H - 11, 1, 10); } });
   // an LCD pixel is on or off: snap every pixel to the nearest of the three inks

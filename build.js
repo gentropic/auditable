@@ -2233,6 +2233,47 @@ if (target === 'gnsslog') {
   return;
 }
 
+if (target === 'lamina-dd60') {
+  // lamina, DD-60 edition — the easter egg at gentropic.org/lamina/dd60/: the DADA Diskman (ext/dd60/chrome.js)
+  // reading files of any size through @gcu/lamina. A registry/blob-URL build like lamina's; runtime in the
+  // clear; Sealed CSP (connect-src 'none'). Output lamina-dd60.html (gitignored) → ../lamina/dd60/index.html.
+  const dir = path.join(__dirname, 'tools/lamina-dd60');
+  const SPEC = { '@gcu/lamina': '#lamina', '@gcu/expr': '#expr', '../../../ext/dd60/chrome.js': '#dd60-chrome' };
+  const libs = [['lamina', 'ext/lamina/index.js'], ['expr', 'ext/expr/index.js'], ['dd60-chrome', 'ext/dd60/chrome.js']];
+  const modules = [];
+  for (const [name, rel] of libs) {
+    const lp = path.join(__dirname, rel);
+    if (!fs.existsSync(lp)) { console.error(`Error: ${rel} not found — build the ext package first.`); process.exit(1); }
+    modules.push({ name, source: fs.readFileSync(lp, 'utf8').replace(/^\n+/, '').replace(/\n+$/, '') });
+  }
+  let app = fs.readFileSync(path.join(dir, 'js/app.js'), 'utf8');
+  for (const [from, to] of Object.entries(SPEC)) app = app.split(`from '${from}'`).join(`from '${to}'`);
+  const raw = app.match(/from '(\.\.?\/[^']+|@gcu\/[^']+)'/);
+  if (raw) { console.error(`Error: lamina-dd60 app still imports ${raw[1]} — add it to the target's SPEC and libs.`); process.exit(1); }
+  modules.push({ name: 'app', source: app.trim() });
+  const entries = modules.map((m) => JSON.stringify(m.name) + ': ' + JSON.stringify(m.source).replace(/<\/script>/gi, '<\\/script>'));
+  const boot = '(async () => {\n' +
+    'const _S = {\n' + entries.join(',\n') + '\n};\n' +
+    'const _O = ' + JSON.stringify(modules.map((m) => m.name)) + ';\n' +
+    'const _U = {};\n' +
+    "for (const n of _O) _U[n] = URL.createObjectURL(new Blob([_S[n] + '\\n//# sourceURL=lamina-dd60/' + n + '.js\\n'], { type: 'application/javascript' }));\n" +
+    "const _m = document.createElement('script'); _m.type = 'importmap';\n" +
+    'const _im = {}; for (const n of _O) _im["#" + n] = _U[n];\n' +
+    "_m.textContent = JSON.stringify({ imports: _im }); document.body.appendChild(_m);\n" +
+    'for (const n of _O) await import(_U[n]);\n' +
+    '_m.remove();\n' +
+    '})();\n';
+  let html = fs.readFileSync(path.join(dir, 'index.html'), 'utf8');
+  html = html.replace(/<!-- dev only[^>]*-->\s*<script type="importmap">[\s\S]*?<\/script>\s*/, '');
+  html = html.replace(/<script type="module" src="\.\/js\/app\.js"><\/script>/, () => `<script>\n${boot}</script>`);
+  if (/importmap/.test(html.split('<body>')[0])) { console.error('Error: lamina-dd60 dev import map not stripped'); process.exit(1); }
+  if (!/connect-src 'none'/.test(html)) { console.error("Error: lamina-dd60 lost connect-src 'none'"); process.exit(1); }
+  const outPath = path.join(__dirname, 'lamina-dd60.html');
+  fs.writeFileSync(outPath, html);
+  console.log(`Built lamina-dd60.html (${(fs.statSync(outPath).size / 1024).toFixed(1)} KB, ${modules.length} modules)`);
+  process.exit(0);
+}
+
 if (target === 'lamina') {
   const lamDir = path.join(__dirname, 'tools/lamina');
   const lamJsDir = path.join(lamDir, 'js');
