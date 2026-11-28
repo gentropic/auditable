@@ -2,3 +2,6 @@ build/
 work/
 figures/shots/
 figures/print/
+# the cover's renders and generated textures (cover/*.mjs + dd60.py make them)
+cover/*.png
+cover/cover.jpg

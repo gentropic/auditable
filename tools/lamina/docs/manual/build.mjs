@@ -1,5 +1,5 @@
 // Builds the lamina manual: screenshots from a live lamina, then the book. (The wuffle manual's harness,
-// trimmed: lamina has no console to generate a command appendix from, and no cover art yet.)
+// trimmed: lamina has no console to generate a command appendix from.)
 //
 //   node tools/lamina/docs/manual/build.mjs              everything (shots · print · pdf)
 //   node tools/lamina/docs/manual/build.mjs pdf          only the book
@@ -10,6 +10,10 @@
 //         cache carried between scenes); a name with no scene is listed, and the book shows a placeholder
 // print — each shot's print copy (≤1800 px, JPEG or PNG, whichever is smaller) → figures/print/
 // pdf   — latexmk (LuaLaTeX, biber for references.bib) → build/lamina-manual.pdf
+// dd60  — the cover (opt-in: needs Blender, takes minutes): cover/lcd.mjs draws the DD-60's screen from the
+//         sample's own rows, cover/label.mjs prints the caddy's label, cover/dd60.py models and renders the
+//         device in Blender (Cycles, a shadow catcher, wuffle's studio HDRI when it's there), and wuffle's
+//         on-basalt.mjs lays it on the page's basalt → cover/cover.jpg (the title page picks it up).
 //
 // WHICH lamina: work/lamina.html when it exists (a pinned build — copy one there to shoot a fixed version
 // while lamina itself is being changed), else the built lamina.html at the repo root.
@@ -153,6 +157,19 @@ function phasePdf() {
   else console.log(`pdf: build/lamina-manual.pdf  (${pages || '?'} pages · overfull lines ${overfull}, missing glyphs ${missing}, undefined references ${undefinedRefs.length})`);
 }
 
-if (want('shots')) await phaseShots(await readWanted());
-if (want('print') || want('pdf')) await phasePrint();
-if (want('pdf')) phasePdf();
+// the cover: opt-in only (`node build.mjs dd60 [--res 2100 --samples 320]`)
+if (PHASES.includes('dd60')) {
+  const flag = (k, d) => { const i = argv.indexOf(k); return i >= 0 ? argv[i + 1] : d; };
+  const res = flag('--res', '2100'), samples = flag('--samples', '320');
+  for (const s of ['lcd.mjs', 'label.mjs']) if (spawnSync(process.execPath, [join(HERE, 'cover', s)], { stdio: 'inherit' }).status !== 0) { console.log(`dd60: ${s} FAILED`); process.exit(1); }
+  const pf = 'C:/Program Files/Blender Foundation';
+  const found = existsSync(pf) ? (await readdir(pf)).map((v) => join(pf, v, 'blender.exe')).find((p) => existsSync(p)) : null;
+  const blender = process.env.BLENDER || found || 'blender';
+  const hdri = resolve(ROOT, 'tools/wuffle/docs/manual/cover/assets/brown_photostudio_02_2k.hdr');   // wuffle's (gitignored, fetched by its waffle step)
+  const r = spawnSync(blender, ['-b', '-P', join(HERE, 'cover', 'dd60.py'), '--', '--res', res, '--samples', samples, '--hdri', existsSync(hdri) ? hdri : '', '--out', join(HERE, 'cover', 'cover.png')], { stdio: 'inherit' });
+  if (r.status !== 0) { console.log('dd60: FAILED (is Blender installed? set BLENDER=path/to/blender)'); process.exitCode = 1; }
+  else spawnSync(process.execPath, [resolve(ROOT, 'tools/wuffle/docs/manual/cover/on-basalt.mjs'), join(HERE, 'cover', 'cover.png'), join(HERE, 'cover', 'cover.jpg')], { stdio: 'inherit' });
+}
+if (want('shots') && !(PHASES.length === 1 && PHASES[0] === 'dd60')) await phaseShots(await readWanted());
+if ((want('print') || want('pdf')) && !(PHASES.length === 1 && PHASES[0] === 'dd60')) await phasePrint();
+if (want('pdf') && !(PHASES.length === 1 && PHASES[0] === 'dd60')) phasePdf();

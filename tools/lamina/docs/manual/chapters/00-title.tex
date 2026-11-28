@@ -1,15 +1,13 @@
 % THE COVER — a GCU field manual, in the series' house style (wuffle's cover/README.md): basalt ground, the
 % kicker, the name in the display face, the amber rule, the subtitle, a caption at the foot saying exactly
-% what the figure is. The FIGURE is not chosen yet (the idea on the table: a varved sediment core whose
-% laminae are the rows of a table, heat-map coloured, one bright band lifted out as a filter lifts its rows).
-% Until it exists the page carries a placeholder frame where it will sit: drop cover/cover.jpg in and it
-% takes the frame's place.
+% what the figure is. The figure: the GCU DD-60 "DADA Diskman" reading lamina's sample, its file beside it in
+% a caddy — cover/README.md; `node build.mjs dd60` makes cover/cover.jpg. Without it, a placeholder frame.
 \begin{titlepage}
 \begin{tikzpicture}[remember picture, overlay]
   \fill[basalt] (current page.south west) rectangle (current page.north east);
   \IfFileExists{cover/cover.jpg}{%
-    \node[inner sep=0pt, anchor=center] at ([xshift=8mm, yshift=70mm]current page.south east)
-      {\includegraphics[width=300mm]{cover/cover.jpg}};
+    \node[inner sep=0pt, anchor=south east] at ([xshift=12mm]current page.south east)
+      {\includegraphics[width=190mm]{cover/cover.jpg}};   % from the lower-right corner, clear of the caption; its top is empty basalt
   }{%
     \node[draw=basalttext!45, dashed, line width=0.6pt, minimum width=120mm, minimum height=110mm, text=basalttext!70, font=\displaylight\small, align=center]
       at ([xshift=-82mm, yshift=96mm]current page.south east) {the cover figure\\[1mm]\footnotesize(not chosen yet)};
@@ -21,10 +19,12 @@
   \fill[amberlight] ([xshift=24mm, yshift=-93mm]current page.north west) rectangle ([xshift=64mm, yshift=-94.4mm]current page.north west);
   \node[anchor=north west, inner sep=0pt, text=basalttext, text width=118mm, font=\displaylight\fontsize{19}{25}\selectfont]
     at ([xshift=24mm, yshift=-101mm]current page.north west) {a windowed viewer\\for very large tables};
-  \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=64mm, font=\sffamily\scriptsize, align=left]
+  \node[anchor=south west, inner sep=0pt, text=basalttext!80!basalt, text width=54mm, font=\sffamily\scriptsize, align=left]
     at ([xshift=24mm, yshift=36mm]current page.south west)
-    {\IfFileExists{cover/cover.jpg}{\textcolor{amberlight}{Cover.} % TODO: the caption, when the figure exists
-    }{\textcolor{amberlight}{Cover.} The figure is still to come.}};
+    {\IfFileExists{cover/cover.jpg}{\textcolor{amberlight}{Cover.} The GCU DD-60 ``DADA Diskman'', an electronic
+    book player that never was, reading the sample block model: rows 55,691--55,705, the Cu\_pct values
+    of 1\,\% and over shown inverse. Beside it, the file on an 8\,cm disc in its caddy. Its screen is drawn
+    from the sample's own rows; modelled and rendered in Blender.}{\textcolor{amberlight}{Cover.} The figure is still to come.}};
   \node[anchor=south west, inner sep=0pt, text=basalttext, font=\sffamily\small, text width=84mm]
     at ([xshift=24mm, yshift=20mm]current page.south west)
     {Geoscientific Chaos Union\enskip·\enskip gentropic.org/lamina\\[1mm]\textcolor{faint}{\today}};
