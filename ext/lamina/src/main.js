@@ -10,3 +10,4 @@ export { scanSortKeys } from './sort.js';
 export { scanColumnStats, scanAllColumnStats, scanGroupBy, scanGradeTonnage, scanDataQuality } from './stats.js';
 export { detectKind } from './detect.js';
 export { createLaminaProvider } from './provider.js';
+export { visibleText, createRawLinesView, installRawCursor, lineOfOffset, recordOffset, recordAtOffset, createHexView } from './raw.js';

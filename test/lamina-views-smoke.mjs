@@ -117,6 +117,53 @@ for (const [tag, url] of [['dev', '/tools/lamina/index.html'], ['built', '/lamin
   const empty = await E(() => getComputedStyle(document.getElementById('empty')).display);
   check(s.n === 0 && !s.focused && s.name === 'no file' && empty !== 'none', `[${tag}] closing every tab shows the empty state`, { s, empty });
 
+  // 9 ── the raw view: a row's bytes beside its table; the invisible made visible; grep; back to the row; hex
+  await E(async () => {
+    const rows = ['HOLE,FROM,TO,AU,LITO'];
+    for (let i = 0; i < 2000; i++) rows.push(`DH${i % 40},${i},${i + 1},${(i % 97) / 10},${i === 1500 ? '"OXI\nDE"' : i === 700 ? 'OXIDE ' : 'FRESH'}`);
+    await window._lamina.openInTab(new File([rows.join('\n').replace('DH5,5,6', 'DH5\t,5,6') + '\r\n'], 'holes.csv'));
+  });
+  await settle(900);
+  const raw = await E(async () => {
+    const l = window._lamina, t = l.current;
+    await l.showRawOfRow(t, 1200); await new Promise((r) => setTimeout(r, 500));
+    const v = l.focused, at = await v.baseVs.ensureRow(v.grid.getSelection().r0);
+    const lines = []; for (const k of [6, 701, 1501, 1502, 2001]) lines.push((await v.baseVs.ensureRow(k))[1]);
+    const left = Math.round(t.panel.getBoundingClientRect().left), right = Math.round(v.panel.getBoundingClientRect().left);
+    return { label: v.label, at, lines, sideBySide: left < right };
+  });
+  check(raw.label === 'holes.csv · raw' && raw.sideBySide && raw.at[1] === 'DH0,1200,1201,3.6,FRESH␊'
+    && raw.lines.join('|') === 'DH5⇥,5,6,0.5,FRESH␊|DH20,700,701,2.1,OXIDE·␊|DH20,1500,1501,4.5,"OXI␊|DE"␊|DH39,1999,2000,5.9,FRESH␍␊',
+  `[${tag}] Show raw: row 1200's line beside the table; tab ⇥, trailing space ·, the quoted newline and the CRLF all visible`, raw);
+  const grep = await E(async () => { await window._lamina.applyFilter('line contains "OXI"'); await new Promise((r) => setTimeout(r, 400)); return document.getElementById('meta').textContent; });
+  check(/^2 of 2,002 lines/.test(grep), `[${tag}] a filter on raw lines is a grep (2 of 2,002 lines)`, grep);
+  const back = await E(async () => {
+    const l = window._lamina, v = l.focused; await l.applyFilter('');
+    await l.showRowOfRaw(v, 1502); await new Promise((r) => setTimeout(r, 300));
+    return { focused: l.focused.label, row: l.grid.getSelection().r0 };
+  });
+  check(back.focused === 'holes.csv' && back.row === 1500, `[${tag}] Show as a row: the quoted field's second line is row 1500`, back);
+  const hex = await E(async () => {
+    const l = window._lamina; await l.showRawOfRow(l.current, 3);
+    const v = l.focused; await l.switchRawAt(v, v.grid.getSelection().r0); await new Promise((r) => setTimeout(r, 300));
+    const h = l.focused; return { label: h.label, row: await h.baseVs.ensureRow(h.grid.getSelection().r0) };
+  });
+  check(hex.label === 'holes.csv · hex' && hex.row[0] === '00000040' && hex.row[2] === '.2,FRESH.DH3,3,4', `[${tag}] lines → hex at the same bytes (row 3 starts in 0x40)`, hex);
+  const bin = await E(async () => {
+    const l = window._lamina; await l.openInTab(new File([new Uint8Array([0x50, 0x4b, 3, 4, 0, 0, 255, 1])], 'x.bin'));
+    await l.openRawOfFocused('hex'); await new Promise((r) => setTimeout(r, 300));
+    return { label: l.focused.label, row: await l.focused.baseVs.ensureRow(0) };
+  });
+  check(bin.label === 'x.bin · hex' && bin.row[2] === 'PK......', `[${tag}] a binary file's note → its bytes in hex`, bin);
+  const encoding = await E(async () => {
+    const l = window._lamina; await l.openInTab(new File([new Uint8Array([0x63, 0x61, 0x66, 0xe9, 10])], 'latin.txt'));
+    await l.openRawOfFocused('lines'); await new Promise((r) => setTimeout(r, 300));
+    const a = (await l.focused.baseVs.ensureRow(0))[1];
+    await l.reopen({ encoding: 'windows-1252' }); await new Promise((r) => setTimeout(r, 300));
+    return { utf8: a, latin1: (await l.focused.baseVs.ensureRow(0))[1] };
+  });
+  check(encoding.utf8 === 'caf�␊' && encoding.latin1 === 'café␊', `[${tag}] raw lines in another encoding: caf�␊ → café␊`, encoding);
+
   check(!errors.length, `[${tag}] no page errors`, errors);
   await page.context().close();
 }

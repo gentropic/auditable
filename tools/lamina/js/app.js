@@ -9,7 +9,7 @@
 
 import { createGrid, PENDING } from '@gcu/loom';
 import { shell } from '@gcu/leadacid';   // the lead-acid shell shim — feature-detected, dormant on the web
-import { detectKind, buildMemorySource, buildFileSource, buildStreamSource, buildSourceFromIndex, indexOf, fileKey, createRecordViewSource, scanFilter, createResultView, scanSortKeys, scanColumnStats, scanAllColumnStats, scanGroupBy, scanGradeTonnage, scanDataQuality, parseNum, createLaminaProvider, LOADING, withCalcCursor, withCalcView } from '@gcu/lamina';
+import { detectKind, buildMemorySource, buildFileSource, buildStreamSource, buildSourceFromIndex, indexOf, fileKey, createRecordViewSource, scanFilter, createResultView, scanSortKeys, scanColumnStats, scanAllColumnStats, scanGroupBy, scanGradeTonnage, scanDataQuality, parseNum, createLaminaProvider, LOADING, withCalcCursor, withCalcView, splitRecordsPos, createRawLinesView, installRawCursor, lineOfOffset, recordOffset, recordAtOffset, createHexView } from '@gcu/lamina';
 import { compile, compileBool, validate, deps, complete, tokenize, parse as exprParse, quoteIdent, canMatch } from '@gcu/expr';   // SQL-WHERE-flavored filter + calc language; complete() drives autocomplete, tokenize() the highlight overlay
 import { gradeTonnage } from '@gcu/sluice';   // streaming accumulators — the grade-tonnage cutoff curve (one accumulator per grade field, driven from lamina's record cursor)
 import { convert as unitConvert } from '@gcu/units';   // grade/density unit declarations — the block-model report
@@ -74,6 +74,9 @@ let _viewSeq = 0;
 // where the next mounted file goes: 'tab' (a user opened it — File → Open, a drop, a recent) or
 // 'replace' (the focused view reads again: a changed interpretation, a lens re-read, the host API)
 let _openNext = 'replace';
+// where the next view's BYTES are — { file | bytes | openStream | reader, label, textual } — set just
+// before a mount, carried on the view as v.rawOf (View → Raw reads it; consumed by installView)
+let _rawNext = null;
 const alive = (c) => !!c && views.get(c.tabId) === c;
 const say = (c, text) => { if (c === current) $('#meta').textContent = text; };   // the footer speaks for the focused view only
 let _host = null;               // the host API (window.lamina) — created at the end of the module
@@ -116,7 +119,7 @@ function showNote(name, badge, title, msg, meta) {
   installView(v);                                       // a tab of its own (or in place of the focused view), saying why
 }
 function showBinary(name, totalBytes) {
-  showNote(name, 'binary', 'binary file', 'use the hex viewer for this one', `${fmtBytes(totalBytes)} · binary`);
+  showNote(name, 'binary', 'binary file', 'not a table — View → Raw (hex) shows its bytes', `${fmtBytes(totalBytes)} · binary`);
 }
 
 // ── views ─────────────────────────────────────────────────────────────────────────
@@ -136,6 +139,8 @@ function makePanel(tabId) {
 const tabTitle = (v) => v.label || 'untitled';
 
 function installView(v, { background = false } = {}) {
+  if (!v.rawOf && _rawNext) v.rawOf = _rawNext;
+  _rawNext = null;
   const mode = background ? 'tab' : _openNext;
   if (!background) _openNext = 'replace';
   const prev = focused;
@@ -224,6 +229,135 @@ async function newViewOfFocused() {
   _openNext = 'tab';
   await c.again();
   if (current && current !== c) { delete lens.interpretation; await applyLensView(lens); }
+}
+
+// ── the raw view ──────────────────────────────────────────────────────────────────
+// The bytes of a view's file as they are: LINES (a text-kind index over the same file, each line
+// with its byte offset and the invisible made visible) or HEX (16 bytes a row, no index). It opens
+// in a split beside its table; a row jumps to its bytes, a raw line jumps back to its row.
+const rawByteSource = async (ro) => {
+  if (ro.bytes) return { totalBytes: ro.bytes.length, readRange: async (o, l) => ro.bytes.subarray(o, o + l) };
+  if (ro.file) return { totalBytes: ro.file.size, readRange: async (o, l) => new Uint8Array(await ro.file.slice(o, o + l).arrayBuffer()) };
+  if (ro.reader) return { totalBytes: ro.size, readRange: (o, l) => Promise.resolve(ro.reader(o, l)) };
+  return rawLinesSource(ro);                              // a decompressed stream: its text index carries the reader
+};
+async function rawLinesSource(ro) {
+  const encoding = ro.encoding;
+  if (ro._lines && ro._lines.encoding === encoding) return ro._lines;
+  let src;
+  if (ro.bytes) src = buildMemorySource(ro.bytes, { kind: 'text', encoding });
+  else if (ro.file) {
+    const key = fileKey(ro.file) + '::lines', cached = await idbCache.get(key);
+    if (cacheFresh(cached) && cached.index) src = buildSourceFromIndex(ro.file, cached.index);
+    else {
+      say(current, 'indexing the lines…');
+      const opts = { kind: 'text', onProgress: (r, t) => say(current, `indexing the lines… ${t ? Math.round((100 * r) / t) : 0}%`) };
+      try { src = (canWorker && ro.file instanceof Blob) ? await buildFileSource(ro.file, { kind: 'text', scan: workerScan }) : await buildFileSource(ro.file, opts); }
+      catch { src = await buildFileSource(ro.file, opts); }
+      idbCache.set(key, { v: CACHE_VERSION, detect: { kind: 'text' }, index: indexOf(src) });
+    }
+  } else if (ro.openStream) src = await buildStreamSource({ openStream: ro.openStream, kind: 'text' });
+  else throw new Error('no bytes to show for this view');
+  src.encoding = encoding;
+  ro._lines = src;
+  return src;
+}
+async function mountRaw(ro, mode, { srcTab } = {}) {
+  let vs, src, total;
+  if (mode === 'hex') { const b = await rawByteSource(ro); const h = createHexView(b); vs = h.view; src = h.cursor; total = b.totalBytes; }
+  else { const t = await rawLinesSource(ro); vs = createRawLinesView(t); src = installRawCursor(t); src._lines = t; total = t.totalBytes; }
+  const d = { kind: 'raw', raw: mode, schema: vs.schema, dataStart: 0, decimal: '.', encoding: ro.encoding };
+  installView({ source: src, d, schema: vs.schema, dataStart: 0, baseVs: vs, label: `${ro.label} · ${mode === 'hex' ? 'hex' : 'raw'}`, totalBytes: total,
+    filterResult: null, sort: null, hidden: new Set(), colWidths: mode === 'hex' ? { 0: 96, 1: 400, 2: 180 } : { 0: 104, 1: 1600 }, colFormats: {}, _vis: null,
+    file: null, bytes: null, force: {}, rawOf: ro, raw: mode, rawSrcTab: srcTab });
+  const c = current;
+  c.again = () => mountRaw(ro, mode, { srcTab });
+  _recPinned = null; _recRow = 0;
+  initCalcState();
+  await recompute(c);
+  tableOpened();
+  return c;
+}
+// View → Raw: the focused view's bytes, beside it (or the focused raw view switched over)
+async function openRawOfFocused(mode) {
+  const f = focused; if (!f) return;
+  if (f.raw) return switchRawAt(f, (f.grid && f.grid.getSelection() || { r0: 0 }).r0, mode);
+  if (!f.rawOf) { say(current, 'this view has no bytes of its own to show'); return; }
+  const v = await ensureRawView(f, mode === 'lines' && !f.rawOf.textual ? 'hex' : mode);
+  if (v) { v.grid && v.grid.focus(); }
+}
+const rawViewOf = (t) => [...views.values()].find((v) => v.raw && v.rawSrcTab === t.tabId);
+async function ensureRawView(t, mode) {
+  const have = rawViewOf(t);
+  if (have && have.raw === mode) { rails.activateTab(have.tabId); setFocus(have); return have; }
+  if (have) { rails.activateTab(have.tabId); setFocus(have); _openNext = 'replace'; return mountRaw(have.rawOf, mode, { srcTab: t.tabId }); }
+  if (!t.rawOf.encoding && t.d && t.d.encoding) t.rawOf.encoding = t.d.encoding;
+  _openNext = 'tab';
+  const v = await mountRaw(t.rawOf, mode, { srcTab: t.tabId });
+  // side by side with its table when there's room (on a phone: a tab)
+  const at = findTab(rails.state, t.tabId);
+  if (innerWidth >= 720 && at && at.container === 'dock') { rails.moveTab(v.tabId, { to: 'split', nodeId: at.stack.id, side: 'right' }); rails.activateTab(v.tabId); }
+  return v;
+}
+// a record (0-based display row of the base view) → its row in a view that may be filtered or sorted
+function displayRowOf(c, disp) {
+  const vs = c.view || c.baseVs;
+  if (!vs.rowHeaderAt) return disp < vs.rowCount() ? disp : -1;
+  for (let r = 0, n = vs.rowCount(); r < n; r++) if (vs.rowHeaderAt(r) - 1 === disp) return r;
+  return -1;
+}
+function selectRow(c, r, cols = 1) {
+  if (!c.grid || r < 0) return;
+  c.grid.setSelection({ r0: r, c0: 0, r1: r, c1: Math.max(0, cols - 1) });
+  c.grid.revealCell(r, 0);
+  if (c === current) c.grid.focus();
+}
+// Show raw: this row's bytes, in the raw view beside the table
+async function showRawOfRow(c, row) {
+  const ro = c.rawOf; if (!ro) return;
+  const vs = c.view || c.baseVs;
+  const rec = (vs.rowHeaderAt ? vs.rowHeaderAt(row) - 1 : row) + c.dataStart;
+  let off = 0;
+  if (ro.recOffset) off = ro.recOffset(rec);
+  else if (c._src0 && c._src0.blockOffsets) off = await recordOffset(c._src0, rec, (b) => splitRecordsPos(b, { kind: c._src0.kind, quote: (c._src0.quote || '"').charCodeAt(0) }));
+  const v = await ensureRawView(c, ro.textual ? 'lines' : 'hex');
+  await revealOffset(v, off);
+}
+async function revealOffset(v, off) {
+  let r = v.raw === 'hex' ? Math.floor(off / 16) : await lineOfOffset(v.source._lines, off);
+  r = displayRowOf(v, r);
+  if (r < 0) { say(v, 'that line is filtered out of this raw view — clear its filter to see it'); return; }
+  selectRow(v, r, v.raw === 'hex' ? 3 : 2);
+}
+// the table a raw lines view came from, if it's still open and its rows have byte offsets
+function rawSourceTable(c) { const t = c.rawSrcTab && views.get(c.rawSrcTab); return t && !t.note && !t.raw && t._src0 && t._src0.blockOffsets ? t : null; }
+async function rawRowOffset(c, row) {
+  const vs = c.view || c.baseVs;
+  const f = await (vs.ensureRow ? vs.ensureRow(row) : vs.rowAt(row));
+  if (!f || f === LOADING) return null;
+  return c.raw === 'hex' ? parseInt(f[0], 16) : Number(f[0]);
+}
+// Show as a row: the table row this raw line belongs to
+async function showRowOfRaw(c, row) {
+  const t = rawSourceTable(c); if (!t) return;
+  const off = await rawRowOffset(c, row); if (off == null) return;
+  const rec = await recordAtOffset(t._src0, off, (b) => splitRecordsPos(b, { kind: t._src0.kind, quote: (t._src0.quote || '"').charCodeAt(0) }));
+  const disp = rec - t.dataStart;
+  rails.activateTab(t.tabId); setFocus(t);
+  if (disp < 0) { say(t, 'that line is the header (or a preamble line lamina skips)'); return; }
+  const r = displayRowOf(t, disp);
+  if (r < 0) { say(t, `that line is row ${(disp + 1).toLocaleString()}, filtered out of this view`); return; }
+  selectRow(t, r, 1);
+}
+// lines ↔ hex at the same bytes
+async function switchRawAt(c, row, mode) {
+  const to = mode || (c.raw === 'lines' ? 'hex' : 'lines');
+  if (to === c.raw) return;
+  if (to === 'lines' && !(c.rawOf && c.rawOf.textual)) return;
+  const off = await rawRowOffset(c, row);
+  _openNext = 'replace';
+  const v = await mountRaw(c.rawOf, to, { srcTab: c.rawSrcTab });
+  if (off != null) await revealOffset(v, off);
 }
 
 // Mount a built source (memory / streaming / tape) read-only. Builds the base
@@ -359,11 +493,12 @@ function mountView(vs, info = {}, keepVScroll = false, c = current) {
 
   const shownRows = vs.rowCount();
   const baseRows = c.baseVs.rowCount();
-  let rows = info.filtered ? `${shownRows.toLocaleString()} of ${baseRows.toLocaleString()} rows (filtered)` : `${shownRows.toLocaleString()} rows`;
+  const unit = c.d.raw === 'lines' ? 'lines' : 'rows';
+  let rows = info.filtered ? `${shownRows.toLocaleString()} of ${baseRows.toLocaleString()} ${unit} (filtered)` : `${shownRows.toLocaleString()} ${unit}`;
   if (info.sorted && c.sort) rows += ` · sorted by ${c.sort.map((s) => c.schema[s.col].name + (s.dir === 'desc' ? ' ↓' : ' ↑')).join(', ')}`;
   const cols = c.hidden.size ? `${vis.length} of ${total} cols` : `${vis.length} cols`;
   const skipped = c.d.skip ? ` · ${c.d.skip} ${c.d.comment ? c.d.comment + '-' : ''}comment lines skipped` : '';
-  const kindLabel = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.kind;
+  const kindLabel = c.d.raw ? `raw ${c.d.raw}` : c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.kind;
   const resident = residentEstimate(c);                  // the never-resident superpower, made visible
   const resTerm = (resident != null && resident < c.totalBytes * 0.6) ? ` · ~${fmtBytes(resident)} resident` : '';
   c._meta = `${rows} × ${cols} · ${fmtBytes(c.totalBytes)}${resTerm} · ${kindLabel}${skipped}`;   // remembered so a copy-flash can restore it
@@ -382,7 +517,7 @@ function syncViewChrome(c) {
   $('#empty').style.display = 'none';
   const badge = $('#kindBadge'); badge.style.display = '';
   if (c.note) { badge.textContent = c.note.badge; badge.title = ''; $('#meta').textContent = c.note.meta; window._laminaVS = null; updateEncHint(); return; }
-  badge.textContent = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
+  badge.textContent = c.d.raw ? `raw · ${c.d.raw}` : c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
   badge.title = detectedFacts(c.d).map(([k, v]) => `${k}: ${v}`).join(' · ') + ' — click to change how the file is read';
   $('#meta').textContent = c._meta || '';
   window._laminaVS = c.view || null;                    // automation hook
@@ -760,6 +895,12 @@ function showCellMenu(row, col, sel, x, y) {
     { sep: true },
     { label: 'Inspect this row…', action: () => { toggleRecordPanel(true); renderRecordCard(row); } },
   ];
+  if (c.raw) {                                           // a raw view: back to the row, or the same bytes the other way
+    items.splice(4, 3);                                  // (no "filter by" / stats on bytes)
+    if (c.raw === 'lines' && rawSourceTable(c)) items.push({ sep: true }, { label: 'Show as a row', action: () => showRowOfRaw(c, row) });
+    items.push({ label: c.raw === 'lines' ? 'Show these bytes in hex' : (c.rawOf && c.rawOf.textual ? 'Show these bytes as lines' : null), action: () => switchRawAt(c, row) });
+    if (!items[items.length - 1].label) items.pop();
+  } else if (c.rawOf && (c.rawOf.recOffset || (c._src0 && c._src0.blockOffsets))) items.push({ label: 'Show raw', action: () => showRawOfRow(c, row) });   // only where a row's bytes can be found (not a sheet's, not a Parquet's)
   showMenu(x, y, items);
 }
 
@@ -971,7 +1112,7 @@ async function applyFilter(str, c = current) {
   if (c._statsCache) c._statsCache.clear();              // filter changes the matched set → cached stats are stale
   c.filterText = str;
   if (!str.trim()) { filterOk(c); c.filterResult = null; const r = recompute(c); refreshGutterFiltered(c); return r; }
-  const cols = c.d.kind === 'delimited' ? c.d.schema : [{ name: 'line' }];
+  const cols = c.d.kind === 'text' ? [{ name: 'line' }] : c.d.schema;
   const v = validate(str, cols);                          // parse + unknown-column → red box, friendly message
   if (!v.ok) return filterErr(new Error(friendlyError(v.errors, cols, str)), c);
   let predicate;
@@ -1013,6 +1154,7 @@ function filterOk(c = current) { if (c) c.filterErrOn = false; if (c === current
 function open(name, bytes, force) {
   if (!force) {
     const lens = sniffLens(bytes); if (lens) return applyLens(lens);   // a .lamina lens, not data
+    _rawNext = { bytes, label: name, textual: false };
     if (looksParquet(bytes.subarray(0, 4), bytes.subarray(Math.max(0, bytes.length - 4)))) return openParquet(name, bytes, bytes.length);
     const dmFmt = detectDM(bytes.subarray(0, Math.min(4096, bytes.length)));   // Datamine .dm?
     if (dmFmt) {
@@ -1026,6 +1168,7 @@ function open(name, bytes, force) {
   const enc = force && force.encoding;
   const sample = bytes.subarray(0, 65536);
   const d = detectKind(sample, { force, name });
+  _rawNext = { bytes, label: name, textual: d.kind !== 'binary' };
   if (d.kind === 'binary') return showBinary(name, bytes.length);
   d.encoding = enc;
   mount(name, d, buildMemorySource(bytes, { kind: d.kind, delimiter: d.delimiter || ',', quote: d.quote || '"', encoding: enc }), bytes.length);
@@ -1037,8 +1180,10 @@ function open(name, bytes, force) {
 // Render in-memory bytes (a small file, or a decompressed archive entry) through
 // the RESIDENT memory source — no streaming, no index cache.
 function openInner(label, bytes) {
+  _rawNext = { bytes, label, textual: false };
   if (looksParquet(bytes.subarray(0, 4), bytes.subarray(Math.max(0, bytes.length - 4)))) return openParquet(label, bytes, bytes.length);
   const d = detectKind(bytes.subarray(0, 65536), { name: label });
+  _rawNext = { bytes, label, textual: d.kind !== 'binary' };
   if (d.kind === 'binary') return showBinary(label, bytes.length);
   lastScan = 'resident';
   mount(label, d, buildMemorySource(bytes, { kind: d.kind, delimiter: d.delimiter || ',', quote: d.quote || '"' }), bytes.length);
@@ -1234,6 +1379,7 @@ async function openXlsx(file) {
   const openOne = async (nm) => {
     $('#meta').textContent = `reading ${nm}…`;
     const tbl = await xlsxOpenSheet(file, { sheet: nm });
+    _rawNext = { file, label: file.name, textual: false };
     mountSheet(sheets.length > 1 ? `${file.name} › ${nm}` : file.name, tbl, file.size);
     $('#fileName').textContent = file.name; $('#empty').style.display = 'none';
   };
@@ -1255,6 +1401,7 @@ function mountDm(name, reader, h, totalBytes) {
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: h.schema, dataStart: 0, decimal: '.', dm: true };
   installView({ source, d, schema: h.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, dm: true });
   current.again = () => mountDm(name, reader, h, totalBytes);
+  if (current.rawOf) current.rawOf.recOffset = (i) => recordRange(h, i).offset;   // Show raw on a row → its record's bytes
   _recPinned = null; _recRow = 0;                        // fresh file → drop any pinned compare record
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'dm';
@@ -2005,6 +2152,7 @@ async function openStreamSource(file, label, openStream, badge, entryPath) {
   $('#fileName').textContent = label; $('#empty').style.display = 'none';
   const head = await readHead(openStream, 65536);
   const d = detectKind(head, { name: label });
+  _rawNext = { openStream, label, textual: d.kind !== 'binary' };
   if (d.kind === 'binary') return showBinary(label, head.length);        // size unknown until scanned
   const key = `${fileKey(file)}::${entryPath || badge}`;
   const cached = await idbCache.get(key);
@@ -2114,6 +2262,7 @@ async function openFile(file, force) {
     // A WORKBOOK IS A ZIP — catch it before the archive route, or a person who
     // drags in parameters.xlsx gets a picker full of xl/worksheets/sheet1.xml
     // instead of their data.
+    _rawNext = { file, label: file.name, textual: false };
     if (fmt === 'zip' && /\.xlsx$|\.xlsm$/i.test(file.name)) {
       try { return await openXlsx(file); }
       catch (e) { return showNote(file.name, 'xlsx', "couldn't read this workbook", e.message || String(e), `${fmtBytes(file.size)} · xlsx`); }
@@ -2150,6 +2299,7 @@ async function openFile(file, force) {
   const cached = forced ? null : await idbCache.get(key);
   if (cacheFresh(cached)) {
     lastScan = 'cache';
+    _rawNext = { file, label: file.name, textual: cached.detect.kind !== 'binary' };
     if (cached.detect.kind === 'binary') return showBinary(file.name, file.size);
     $('#fileName').textContent = file.name; $('#empty').style.display = 'none';
     mount(file.name, cached.detect, buildSourceFromIndex(file, cached.index), file.size);
@@ -2161,6 +2311,7 @@ async function openFile(file, force) {
   const sample = new Uint8Array(await file.slice(0, 65536).arrayBuffer());
   const enc = force && force.encoding;
   const d = detectKind(sample, { force, name: file.name });
+  _rawNext = { file, label: file.name, textual: d.kind !== 'binary' };
   if (d.kind === 'binary') { if (!forced) idbCache.set(key, { v: CACHE_VERSION, detect: d, index: null }); return showBinary(file.name, file.size); }
   d.encoding = enc;
   $('#fileName').textContent = file.name; $('#empty').style.display = 'none';
@@ -2202,6 +2353,10 @@ function updateEncHint() {
 // Re-open the current file applying a force patch (the popover changed something).
 function reopen(patch) {
   const c = current; if (!c) return;
+  if (c.raw) {                                           // raw: the encoding is the one choice there is — flip it and watch the marked bytes change
+    if (!('encoding' in patch)) return;
+    return mountRaw({ ...c.rawOf, encoding: patch.encoding || undefined }, c.raw, { srcTab: c.rawSrcTab });
+  }
   const force = { ...(c.force || {}), ...patch };
   Object.keys(force).forEach((k) => { if (force[k] === '' || force[k] == null) delete force[k]; });   // '' = auto
   if (c.file) openFile(c.file, force);
@@ -2220,6 +2375,7 @@ function delimName(ch) {
 // as a label/value grid in the popover; joined into a one-line badge tooltip.
 function detectedFacts(d) {
   if (!d) return [];
+  if (d.raw) return d.raw === 'hex' ? [['view', 'raw bytes, 16 a row']] : [['view', 'raw lines, as the file has them'], ['encoding', d.encoding || 'utf-8']];
   if (d.dm) return [['format', 'Datamine .dm'], ['columns', String((d.schema || []).length)]];
   if (d.parquet) return d.parquet;
   if (d.kind === 'binary') return [['format', 'binary']];
@@ -2439,6 +2595,7 @@ async function pickFile() {
 // ── menubar (File / View / Help) — reuses the showMenu helper, dark-themed ──
 function menuAt(btn, items) { const r = btn.getBoundingClientRect(); showMenu(r.left, r.bottom + 2, items); }
 const hasFile = () => !!current;
+const hasTable = () => !!current && !current.raw;          // the instruments read tables, not bytes
 $('#mFile').onclick = () => {
   const items = [
     { label: 'Open…    Ctrl+O', action: pickFile },
@@ -2474,11 +2631,11 @@ $('#mData').onclick = () => menuAt($('#mData'), [
   ] },
 ]);
 $('#mTools').onclick = () => menuAt($('#mTools'), [
-  { label: 'Column summary (Σ stats)…', action: () => { if (hasFile()) precomputeStats({ show: true }); } },
-  { label: 'Group by…', action: () => { if (hasFile()) openGroupBy(); } },
-  { label: 'Grade–tonnage…', action: () => { if (hasFile()) openGradeTonnage(); } },
-  { label: 'Grid summary…', action: () => { if (hasFile()) openGridSummary(); } },
-  { label: 'Data quality…', action: () => { if (hasFile()) showDataQuality(); } },
+  { label: 'Column summary (Σ stats)…', action: () => { if (hasTable()) precomputeStats({ show: true }); } },
+  { label: 'Group by…', action: () => { if (hasTable()) openGroupBy(); } },
+  { label: 'Grade–tonnage…', action: () => { if (hasTable()) openGradeTonnage(); } },
+  { label: 'Grid summary…', action: () => { if (hasTable()) openGridSummary(); } },
+  { label: 'Data quality…', action: () => { if (hasTable()) showDataQuality(); } },
 ]);
 $('#mView').onclick = () => menuAt($('#mView'), [
   { label: (showGutter ? '✓ ' : '') + 'Column distributions', action: () => { showGutter = !showGutter; for (const v of views.values()) refreshGutter(v); } },
@@ -2490,6 +2647,8 @@ $('#mView').onclick = () => menuAt($('#mView'), [
     { label: (theme === 'light' ? '✓ ' : '') + 'Light', action: () => setTheme('light') },
   ] },
   { label: 'New view of this file', action: () => { if (hasFile()) newViewOfFocused(); } },
+  { label: 'Raw — the lines as they are', action: () => openRawOfFocused('lines') },
+  { label: 'Raw — the bytes in hex', action: () => openRawOfFocused('hex') },
   { sep: true },
   { label: 'Columns…', action: () => toggleColPanel() },
   { label: 'Record inspector…', action: () => toggleRecordPanel() },
@@ -4046,7 +4205,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { openInTab, setFocus, newViewOfFocused, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
