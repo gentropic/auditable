@@ -626,7 +626,9 @@ test('parseNum: decimal comma vs point', () => {
 
 test('decimal comma: detect numeric + sort/stats/filter parse it', async () => {
   const csv = 'id;grade\n1;1,5\n2;0,8\n3;2,25\n';      // ;-delimited, comma decimals
-  assert.equal(detectKind(B(csv)).schema[1].type, 'string');                       // default point → grade looks like text
+  const auto = detectKind(B(csv));                                                 // nobody said: a ;-file of 1,5 numbers → the decimal comma
+  assert.equal(auto.decimal, ','); assert.equal(auto.schema[1].type, 'number');
+  assert.equal(detectKind(B(csv), { force: { decimal: '.' } }).schema[1].type, 'string');   // forced point → grade reads as text
   const d = detectKind(B(csv), { force: { delimiter: ';', decimal: ',' } });
   assert.equal(d.decimal, ',');
   assert.equal(d.schema[1].type, 'number');                                         // comma → grade is numeric

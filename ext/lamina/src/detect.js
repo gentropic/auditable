@@ -57,14 +57,32 @@ function sniffDelimiter(lines) {
 // Build a delimited result (schema + header guess) for a known delimiter. Header:
 // forced (true/false) or guessed (row 0 all-text + a later numeric). Column count
 // = the median row length (robust to a stray ragged row). Shared by auto + forced.
-function buildDelimited(lines, delimiter, forceHeader, decimal) {
+// The decimal COMMA, when nobody said: with a delimiter that isn't ',' and numbers written 45,2 —
+// several of them, and next to none written 45.2 — it's the Brazilian / European export default.
+function guessDecimal(lines, delimiter) {
+  if (delimiter === ',') return '.';
+  let comma = 0, point = 0;
+  for (const l of lines.slice(0, 60)) for (const v of splitBy(l, delimiter)) {
+    const t = v.trim();
+    if (/^-?\d+(\.\d{3})*,\d+$/.test(t)) comma++;
+    else if (/^-?\d+\.\d+$/.test(t)) point++;
+  }
+  return comma >= 3 && comma > point * 4 ? ',' : '.';
+}
+function buildDelimited(lines, delimiter, forceHeader, decimal, csvHint = false) {
   const rows = lines.filter((l) => l !== '').map((l) => splitBy(l, delimiter));
   const lens = rows.map((r) => r.length).sort((a, b) => a - b);
   const columns = Math.max(1, lens[Math.floor(lens.length / 2)] || 1);
   const head = rows[0] || [];
   let hasHeader;
   if (forceHeader === true || forceHeader === false) hasHeader = forceHeader;
-  else hasHeader = head.length > 0 && head.every((c) => !isNumeric(c, decimal)) && rows.slice(1, 20).some((r) => r.some((v) => isNumeric(v, decimal)));
+  else {
+    hasHeader = head.length > 0 && head.every((c) => !isNumeric(c, decimal)) && rows.slice(1, 20).some((r) => r.some((v) => isNumeric(v, decimal)));
+    // an all-TEXT table (codes and descriptions) has no number to tell its header by: in a .csv, a first
+    // row that is complete, unique, and never seen again in its columns below is taken as the header
+    if (!hasHeader && csvHint && head.length > 1 && head.every((c) => c !== '' && !isNumeric(c, decimal)) && new Set(head).size === head.length
+      && rows.slice(1, 50).every((r) => r.every((v, i) => v !== head[i]))) hasHeader = true;
+  }
   const dataRows = rows.slice(hasHeader ? 1 : 0, hasHeader ? 21 : 20);
   const schema = [];
   for (let c = 0; c < columns; c++) {
@@ -126,7 +144,8 @@ export function detectKind(sample, { sniff, force, name } = {}) {
   if (f.kind === 'binary') return { kind: 'binary' };
   if (!f.kind && !f.delimiter && looksBinary(sample)) return { kind: 'binary' };
 
-  const decimal = f.decimal === ',' ? ',' : '.';   // decimal separator (',' = European/Brazilian)
+  const forcedDec = f.decimal === ',' || f.decimal === '.' ? f.decimal : null;   // '' / absent = auto
+  const decimal = forcedDec || '.';                // the GeoEAS + header guesses before a delimiter is known
   let text; try { text = new TextDecoder(f.encoding || 'utf-8').decode(sample); } catch { text = new TextDecoder().decode(sample); }   // forced encoding → correct header names
   const all = text.split('\n').slice(0, 200).map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l));
 
@@ -138,8 +157,10 @@ export function detectKind(sample, { sniff, force, name } = {}) {
 
   if (f.kind === 'text') return { kind: 'text', skip, comment, dataStart: skip };
 
-  const finish = (r) => ({ ...r, skip, comment, decimal, dataStart: skip + (r.hasHeader ? 1 : 0) });
-  if (f.delimiter) return finish(buildDelimited(lines, f.delimiter, f.hasHeader, decimal));
+  const finish = (r) => ({ ...r, skip, comment, decimal: r.decimal || decimal, dataStart: skip + (r.hasHeader ? 1 : 0) });
+  const csvHint = /\.(csv|tsv|tab|lam|lamina)$/i.test(name || '');   // .lam/.lamina = lamina's marker ext (delimited data)
+  const build = (delim) => { const dec = forcedDec || guessDecimal(lines, delim); return { ...buildDelimited(lines, delim, f.hasHeader, dec, csvHint), decimal: dec }; };
+  if (f.delimiter) return finish(build(f.delimiter));
 
   // recon enrichment (best-effort): if it finds a delimiter + fields, prefer it.
   if (typeof sniff === 'function') {
@@ -159,7 +180,6 @@ export function detectKind(sample, { sniff, force, name } = {}) {
   // A .csv/.tsv/.tab extension is a strong "this is a table" signal — accept the
   // best delimiter even when column counts are inconsistent (ragged/quoted rows),
   // where a generic sniff would bail to text. Otherwise require ≥0.6 consistency.
-  const csvHint = /\.(csv|tsv|tab|lam|lamina)$/i.test(name || '');   // .lam/.lamina = lamina's marker ext (delimited data)
-  if (d && (d.consistent >= 0.6 || (csvHint && d.columns >= 2))) return finish(buildDelimited(lines, d.delimiter, f.hasHeader, decimal));
+  if (d && (d.consistent >= 0.6 || (csvHint && d.columns >= 2))) return finish(build(d.delimiter));
   return { kind: 'text', skip, comment, dataStart: skip };
 }

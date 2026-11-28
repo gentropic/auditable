@@ -883,7 +883,8 @@ async function setColScaleOpt(uc, patch) {
 // Robust scale bounds from the gutter sample: p5 / p95 (tames outliers / log-normal tails).
 async function computeClipBounds(uc) {
   const c = current; const vals = [];
-  await c.source.eachRecord({ dataStart: c.dataStart, limit: GUTTER_SAMPLE }, (disp, fields) => {
+  const rows = gutterSampleRows(c.source, c.dataStart);   // the SPREAD sample, as the gutter — not the file's first rows
+  await c.source.eachRecord({ dataStart: c.dataStart, rows: rows || null, limit: GUTTER_SAMPLE }, (disp, fields) => {
     const x = parseNum(fields[uc], c.d.decimal); if (!Number.isNaN(x)) vals.push(x);
   });
   if (vals.length < 2) return null;
@@ -1466,6 +1467,10 @@ function open(name, bytes, force) {
 function openInner(label, bytes) {
   _rawNext = { bytes, label, textual: false };
   if (looksParquet(bytes.subarray(0, 4), bytes.subarray(Math.max(0, bytes.length - 4)))) return openParquet(label, bytes, bytes.length);
+  const inner = label.split(' › ').pop();
+  if (/\.xlsx$|\.xlsm$/i.test(inner) && detectFormat(bytes) === 'zip') return openXlsx(new File([bytes], inner));   // a workbook in an archive
+  const dmFmt = detectDM(bytes.subarray(0, Math.min(4096, bytes.length)));       // a Datamine .dm in an archive
+  if (dmFmt) { try { const h = parseHeader(bytes, dmFmt); return mountDm(label, (off, len) => Promise.resolve(bytes.subarray(off, off + len)), h, bytes.length); } catch { /* not a .dm after all */ } }
   const d = detectKind(bytes.subarray(0, 65536), { name: label });
   _rawNext = { bytes, label, textual: d.kind !== 'binary' };
   if (d.kind === 'binary') return showBinary(label, bytes.length);
@@ -1506,7 +1511,7 @@ function createDmViewSource(reader, h, { cacheBlocks = 16, blockSize = 256 } = {
       const rows = [];
       for (let i = i0; i < i1; i++) {
         const r = recordRange(h, i);
-        const vals = decodeRecord(bytes.subarray(r.offset - start, r.offset - start + r.length), h);
+        const vals = dmVals(h)(decodeRecord(bytes.subarray(r.offset - start, r.offset - start + r.length), h));
         rows.push(vals.map((v) => (v == null ? '' : String(v))));
       }
       cache.set(b, rows);
@@ -1543,11 +1548,18 @@ function createDmViewSource(reader, h, { cacheBlocks = 16, blockSize = 256 } = {
 // project ONE record: decode only the requested column indices by striding each
 // field's fixed word-offset (readField), instead of the whole record. Missing/
 // unreferenced columns stay undefined — the predicate only reads its own columns.
+// a float32 widened to a double prints as 0.10000000149011612 — the stored value was 0.1, so read it as that
+function f32Dec(x) {
+  if (typeof x !== 'number' || !Number.isFinite(x) || Number.isInteger(x)) return x;
+  for (let p = 6; p <= 9; p++) { const y = Number(x.toPrecision(p)); if (Math.fround(y) === x) return y; }
+  return x;
+}
+const dmVals = (h) => (h.precision === 'sp' ? (vals) => { for (let i = 0; i < vals.length; i++) vals[i] = f32Dec(vals[i]); return vals; } : (vals) => vals);
 function projectDmRecord(bytes, h, cols) {
   const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const out = new Array(h.columns.length);
   for (const ci of cols) out[ci] = readField(dv, h, h.columns[ci], 0);
-  return out;
+  return h.precision === 'sp' ? dmVals(h)(out) : out;
 }
 function createDmCursor(reader, h, { chunk = 4096 } = {}) {
   const n = h.recordCount;
@@ -1570,7 +1582,7 @@ function createDmCursor(reader, h, { chunk = 4096 } = {}) {
           }
           const r = recordRange(h, i);
           const sub = bytes.subarray(r.offset - start, r.offset - start + r.length);
-          visit(disp, cols ? projectDmRecord(sub, h, cols) : decodeRecord(sub, h), i, 0);   // loc0 = record index; cols = strided projection
+          visit(disp, cols ? projectDmRecord(sub, h, cols) : dmVals(h)(decodeRecord(sub, h)), i, 0);   // loc0 = record index; cols = strided projection
 
           if (++seen >= limit) return;                      // sample cap (gutter stats)
         }
@@ -1581,7 +1593,7 @@ function createDmCursor(reader, h, { chunk = 4096 } = {}) {
     async readByLoc(i) {
       const r = recordRange(h, i);
       const bytes = await reader(r.offset, r.length);
-      return decodeRecord(bytes, h).map((v) => (v == null ? '' : String(v)));   // display strings (matches CSV)
+      return dmVals(h)(decodeRecord(bytes, h)).map((v) => (v == null ? '' : String(v)));   // display strings (matches CSV)
     },
   };
 }
@@ -1945,10 +1957,12 @@ async function applyLensFromFile() {
 async function inferCalcType(expr, cols) {
   const c = current;
   let fn; try { fn = compile(expr, cols, { decimal: c.d.decimal }); } catch { return 'string'; }
-  const n = Math.min(6, c.baseVs.rowCount()); const out = [];
-  for (let r = 0; r < n; r++) { const row = await c.baseVs.ensureRow(r); if (row) out.push(fn(row)); }
-  const nn = out.filter((x) => x != null);
-  return nn.length && nn.every((x) => typeof x === 'number') ? 'number' : 'string';
+  // evaluate over the SPREAD sample (not the file's first rows — a blank-on-the-waste-cap formula
+  // looked like text); numbers and blanks make a number column, anything else text
+  const rows = gutterSampleRows(c.source, c.dataStart), out = [];
+  await c.source.eachRecord({ dataStart: c.dataStart, rows: rows || null, limit: 2048 }, (disp, fields) => { const v = fn(fields); if (v != null && v !== '') out.push(v); });
+  const isNum = (x) => typeof x === 'number' || (typeof x === 'string' && !Number.isNaN(parseNum(x, c.d.decimal)));   // a column passed through comes back as its text
+  return out.length && out.every(isNum) ? 'number' : out.length ? 'string' : 'number';
 }
 
 // ── streaming export (the "extract" leg) ───────────────────────────────────────
@@ -2196,7 +2210,7 @@ async function previewCalc() {
   let nameErr = '';
   if (name) {
     const taken = new Set([...c._schema0.map((x) => x.name.toLowerCase()), ...c.calcs.filter((_, i) => i !== _calcEdit).map((x) => x.name.toLowerCase())]);
-    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) nameErr = 'name: a letter then letters / digits / _ / -';
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) nameErr = 'name: a letter, then letters / digits / _ (a "-" would read as minus)';
     else if (taken.has(name.toLowerCase())) nameErr = `a column named "${name}" already exists`;
     if (nameErr) $('#ceName').classList.add('err');
   }
@@ -2352,7 +2366,31 @@ function friendlyError(errors, cols, str) {
     const cond = String(str).replace(/^\s*select\b.*?\bwhere\b/i, '').replace(/^\s*where\b/i, '').trim();
     return `the filter IS the WHERE clause — drop the rest${cond ? `, just: ${cond}` : ''}`;
   }
-  if (e.kind !== 'column') return e.message;
+  if (e.kind === 'column') {                                         // ok-indic reads as ok MINUS indic: say so, and how to write it
+    const src = String(str || ''), at = src.toLowerCase().indexOf(String(e.name).toLowerCase() + '-');
+    const tail = at >= 0 ? (src.slice(at + String(e.name).length + 1).match(/^[A-Za-z_][A-Za-z0-9_-]*/) || [])[0] : null;
+    const m = tail ? [null, tail] : null;
+    if (m) { const whole = `${e.name}-${m[1]}`, col = cols.map((c) => (typeof c === 'string' ? c : c.name)).find((n) => n.toLowerCase() === whole.toLowerCase()); return `${whole} reads as ${e.name} minus ${m[1]} — a name with a "-" is written ${colRef(col || whole).startsWith('[') ? colRef(col || whole) : `["${col || whole}"]`}`; }
+  }
+  if (e.kind === 'column' && current && current.gutter) {          // a bare word that is a VALUE of a text column: say so
+    const lb0 = String(e.name).toLowerCase();
+    for (let i = 0; i < current.gutter.length; i++) {
+      const g = current.gutter[i];
+      if (g && g.kind === 'cat' && Array.isArray(g.values) && g.values.some((v) => String(v).toLowerCase() === lb0)) {
+        const col = current.schema[i].name;
+        return `${e.name} is a value of ${col} — quote it: ${colRef(col)} = "${g.values.find((v) => String(v).toLowerCase() === lb0)}"`;
+      }
+    }
+  }
+  if (e.kind !== 'column') {                                        // f(…) with an f that isn't a function: name it
+    const m = /trailing input near '\('/.test(e.message) && String(str || '').match(/([A-Za-z_][A-Za-z0-9_]*)\s*\(/);
+    if (m) {
+      const fns = ((complete('', 0, { columns: [] }) || {}).options || []).filter((x) => x.kind === 'function').map((x) => String(x.value).replace(/[(]$/, ''));
+      let near = null, bd = 9; for (const f of fns) { const d = lev(f.toLowerCase(), m[1].toLowerCase()); if (d < bd) { bd = d; near = f; } }
+      return `unknown function ${m[1]}${near && bd <= 3 ? ` — did you mean ${near}?` : ''}`;
+    }
+    return e.message;
+  }
   // @gcu/expr already fuzzy-matches and appends its own "— did you mean X?".
   // Appending ours too produced "did you mean FE? — did you mean FE?".
   if (/did you mean/i.test(e.message)) return e.message;
@@ -2530,6 +2568,7 @@ function showPicker(entries, onPick) {
     list.appendChild(item);
   }
   $('#picker').classList.add('show');
+  $('#meta').textContent = 'choose a file from the archive';
 }
 $('#picker').onclick = (e) => { if (e.target.id === 'picker') $('#picker').classList.remove('show'); };  // click backdrop to dismiss
 
@@ -2695,6 +2734,10 @@ function openOpts() {
 // file's first lines cut the way they're being read — refilled after each change re-reads the file
 function fillOpts() {
   if (!current) return;
+  const binTable = !!(current.dm || current.parquet || current.d.xlsx);   // a binary table: its columns are in the file, not guessed
+  for (const id of ['optKind', 'optDelim', 'optHeader', 'optDecimal', 'optSkip', 'optComment']) { const e = $('#' + id); if (e) e.disabled = binTable || !!current.raw; }
+  { const e = $('#optEncoding'); if (e) e.disabled = binTable; }
+  $('#opts').classList.toggle('fixed', binTable);
   const facts = detectedFacts(current.d);
   $('#optDetected').innerHTML = facts.length
     ? '<div class="od-cap">Detected</div>' + facts.map(([k, v]) => `<div class="od-k">${k}</div><div class="od-v">${_escHtml(v)}</div>`).join('')
@@ -2705,7 +2748,7 @@ function fillOpts() {
   $('#optHeader').value = f.hasHeader === true ? 'yes' : f.hasHeader === false ? 'no' : '';
   $('#optSkip').value = f.skip != null ? f.skip : '';
   $('#optComment').value = f.comment != null ? f.comment : '';
-  $('#optDecimal').value = f.decimal === ',' ? ',' : '';
+  $('#optDecimal').value = f.decimal === ',' || f.decimal === '.' ? f.decimal : '';
   $('#optEncoding').value = f.encoding || '';
   renderOptRaw(current);
 }
@@ -2753,7 +2796,7 @@ $('#optDelim').onchange = (e) => reopen({ delimiter: e.target.value });
 $('#optHeader').onchange = (e) => reopen({ hasHeader: e.target.value === 'yes' ? true : e.target.value === 'no' ? false : '' });
 $('#optSkip').onchange = (e) => reopen({ skip: e.target.value === '' ? '' : Math.max(0, e.target.value | 0) });   // '' = auto
 $('#optComment').onchange = (e) => reopen({ comment: e.target.value });                                           // '' = none/auto
-$('#optDecimal').onchange = (e) => reopen({ decimal: e.target.value });                                           // '' = point, ',' = comma
+$('#optDecimal').onchange = (e) => reopen({ decimal: e.target.value });                                           // '' = auto, '.' = point, ',' = comma
 $('#optEncoding').onchange = (e) => reopen({ encoding: e.target.value });                                         // '' = utf-8 (auto)
 $('#encHint').onclick = () => openOpts();                                                                          // footer mojibake hint → interpretation popover
 
@@ -3042,7 +3085,7 @@ const HELP = {
     `<b>lamina</b> — open any file, however large, and scroll, filter, sort, derive, summarize, and quality-check it. Windowed, read-only, offline.<br><br>`
     + `Delimited → grid, text → lines, binary → hex. Opens <b>Datamine .dm</b> and <b>Apache Parquet</b> tables directly — at any size, decoded on the fly (no conversion), with the same filter / sort / stats as CSV. Reads inside zip / tar / gz / zst / bz2 / xz, and windows huge compressed entries without unpacking. Detects GSLIB / Geo-EAS + whitespace dumps and skips <code>#</code> comment preambles. <b>Grade–tonnage</b> (by domain + cutoff curves) runs windowed on any size.<br><br>`
     + `Part of the Geoscientific Chaos Union — <code>gentropic.org</code>.<br><br>`
-    + `<span style="color:var(--dim)">MIT. Bundles <code>fflate · fzstd · seek-bzip</code> (all MIT) for reading archives — full notices in this file's source.</span><br>`
+    + `<span style="color:var(--dim)">MIT. Bundles <code>fflate · fzstd</code> (MIT) and @gcu/bz2 · @gcu/lzma (bzip2's licence · MIT) for reading archives — full notices in this file's source.</span><br>`
     + `<span style="color:var(--dim)">build <code>${__LAMINA_BUILD__}</code></span>`],
 };
 function showOverlay(title, html) {
@@ -3856,7 +3899,10 @@ function wireGroupBy(c) {
   $('#helpBody').querySelectorAll('.sum-tbl tbody tr:not(.gb-total)').forEach((tr) => tr.onclick = () => {
     const key = tr.getAttribute('data-key'), gname = c.schema[_gbResult.config.group].name;
     $('.help-box').classList.remove('wide'); $('#help').classList.remove('show');
-    if (key === '(blank)') applyFilter(`${colRef(gname)} is blank`); else filterByValue(_gbResult.config.group, key);
+    const uc = _gbResult.config.group, numeric = c.schema[uc] && c.schema[uc].type === 'number';
+    const cond = key === '(blank)' ? `${colRef(gname)} is blank` : (numeric && !Number.isNaN(Number(key))) ? `${colRef(gname)} == ${key}` : `${colRef(gname)} == "${String(key).replace(/"/g, '')}"`;
+    const was = $('#filter').value.trim(), expr = was ? `(${was}) and ${cond}` : cond;   // within the rows already filtered
+    $('#filter').value = expr; syncFilterClear(); applyFilter(expr);
   });
   const cp = $('#gbCopy'); if (cp) cp.onclick = () => { copyText(groupTSV(c)); cp.textContent = 'copied ✓'; setTimeout(() => { cp.textContent = 'copy all'; }, 1200); };
 }
@@ -4628,7 +4674,7 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { pinResult, checkResult, rerunResult, openOpts, renderOptRaw, complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { f32Dec, pinResult, checkResult, rerunResult, openOpts, renderOptRaw, complementView, showRawOfRecord, buildLensFile, applyLensV2, rememberDoc, saveSession, offerSession, set askForFiles(f) { _askForFiles = f; }, openInTab, setFocus, newViewOfFocused, openRawOfFocused, ensureRawView, showRawOfRow, showRowOfRaw, switchRawAt, revealOffset, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;

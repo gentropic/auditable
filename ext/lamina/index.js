@@ -1023,10 +1023,12 @@ async function scanDataQuality(source, { schema, dataStart = 0, decimal = '.', r
       if (s !== t) { a.pad++; first(a, 'pad', disp); }
       if (a.distinct.size < 50) a.distinct.add(t);
       const x = parseNum(t, decimal);
-      if (Number.isNaN(x)) { a.nonNum++; first(a, 'nonNum', disp); if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
+      // "1,234" with a decimal POINT doesn't parse — so it's here, among the non-numbers, that it's a thousands separator
+      if (Number.isNaN(x) && a.num && decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) { a.thou++; first(a, 'thou', disp); }
+      else if (Number.isNaN(x)) { a.nonNum++; first(a, 'nonNum', disp); if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
       else {
         if (x < a.min) { a.min = x; a.minCount = 1; a.at.min = disp; } else if (x === a.min) a.minCount++;
-        if (a.num) { if (/^0[0-9]/.test(t)) { a.lead++; first(a, 'lead', disp); } if (decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) { a.thou++; first(a, 'thou', disp); } }
+        if (a.num && /^0[0-9]/.test(t)) { a.lead++; first(a, 'lead', disp); }
       }
     }
   });
@@ -1054,6 +1056,7 @@ async function scanDataQuality(source, { schema, dataStart = 0, decimal = '.', r
 
 // Quantiles interpolated from a histogram's bin counts over [min,max] — used by the
 // bulk precompute (exact percentiles would need a per-column value buffer). Approximate.
+const QUANT_BINS = 4096;   // ≈ quantiles to within (max − min)/4096 — 32 KB a column for the pass
 function quantilesFromHist(bins, min, max) {
   const n = bins.length, total = bins.reduce((s, v) => s + v, 0); if (!total) return null;
   const w = (max - min) / n;
@@ -1100,7 +1103,9 @@ async function scanAllColumnStats(source, { schema, dataStart = 0, decimal = '.'
   });
   // pass 2 — histogram bins for numeric columns that have a range
   const hcols = [];
-  for (let i = 0; i < cols; i++) { const a = acc[i]; if (a.num && a.nNum && a.max > a.min) { a.lin = new Float64Array(HIST_BINS); a.log = (a.posMin > 0 && a.posMin < a.max) ? new Float64Array(HIST_BINS) : null; hcols.push(i); } }
+  // the ≈ quantiles come from a FINE histogram (QUANT_BINS over [min, max]), not the 40 display bins: on a
+  // skewed grade most values share the first display bin and its interpolation is no median at all
+  for (let i = 0; i < cols; i++) { const a = acc[i]; if (a.num && a.nNum && a.max > a.min) { a.lin = new Float64Array(HIST_BINS); a.fine = new Float64Array(QUANT_BINS); a.log = (a.posMin > 0 && a.posMin < a.max) ? new Float64Array(HIST_BINS) : null; hcols.push(i); } }
   if (hcols.length) {
     await source.eachRecord({ dataStart, rows, signal, onProgress: (b, n) => onProgress && onProgress(n + b, n * 2) }, (disp, fields) => {
       for (let h = 0; h < hcols.length; h++) {
@@ -1108,6 +1113,7 @@ async function scanAllColumnStats(source, { schema, dataStart = 0, decimal = '.'
         if (raw == null || raw === '') continue;
         const x = parseNum(raw, decimal); if (Number.isNaN(x)) continue;
         const sp = (a.max - a.min) || 1; let k = Math.floor((x - a.min) / sp * HIST_BINS); if (k >= HIST_BINS) k = HIST_BINS - 1; if (k < 0) k = 0; a.lin[k]++;
+        let kf = Math.floor((x - a.min) / sp * QUANT_BINS); if (kf >= QUANT_BINS) kf = QUANT_BINS - 1; if (kf < 0) kf = 0; a.fine[kf]++;
         if (a.log && x > 0) { const l0 = Math.log(a.posMin), ls = (Math.log(a.max) - l0) || 1; let kk = Math.floor((Math.log(x) - l0) / ls * HIST_BINS); if (kk >= HIST_BINS) kk = HIST_BINS - 1; if (kk < 0) kk = 0; a.log[kk]++; }
       }
     });
@@ -1120,7 +1126,7 @@ async function scanAllColumnStats(source, { schema, dataStart = 0, decimal = '.'
       const skew = (a.nNum > 2 && a.m2 > 0) ? (Math.sqrt(a.nNum) * a.m3) / Math.pow(a.m2, 1.5) : null;
       const histogram = a.lin ? { bins: Array.from(a.lin), min: a.min, max: a.max, log: false } : null;
       const logHistogram = a.log ? { bins: Array.from(a.log), min: a.posMin, max: a.max, log: true } : null;
-      const quantiles = a.lin ? quantilesFromHist(a.lin, a.min, a.max) : null;
+      const quantiles = a.fine ? quantilesFromHist(a.fine, a.min, a.max) : null;
       return { kind: 'number', count: a.count, nulls: a.nulls, bad: a.bad, badSamples: [...a.badSamples], excluded: 0, excludeZero: false, excludeNeg: false, zeros: a.zeros, cv, skew, n: a.nNum, min: a.nNum ? a.min : null, max: a.nNum ? a.max : null, mean: a.nNum ? a.mean : null, std, sum: a.sum, quantiles, histogram, logHistogram, quantilesApprox: true, precomputed: true };
     }
     const tot = [...a.freq.values()].reduce((s, v) => s + v, 0) || 1;
@@ -1190,14 +1196,32 @@ function sniffDelimiter(lines) {
 // Build a delimited result (schema + header guess) for a known delimiter. Header:
 // forced (true/false) or guessed (row 0 all-text + a later numeric). Column count
 // = the median row length (robust to a stray ragged row). Shared by auto + forced.
-function buildDelimited(lines, delimiter, forceHeader, decimal) {
+// The decimal COMMA, when nobody said: with a delimiter that isn't ',' and numbers written 45,2 —
+// several of them, and next to none written 45.2 — it's the Brazilian / European export default.
+function guessDecimal(lines, delimiter) {
+  if (delimiter === ',') return '.';
+  let comma = 0, point = 0;
+  for (const l of lines.slice(0, 60)) for (const v of splitBy(l, delimiter)) {
+    const t = v.trim();
+    if (/^-?\d+(\.\d{3})*,\d+$/.test(t)) comma++;
+    else if (/^-?\d+\.\d+$/.test(t)) point++;
+  }
+  return comma >= 3 && comma > point * 4 ? ',' : '.';
+}
+function buildDelimited(lines, delimiter, forceHeader, decimal, csvHint = false) {
   const rows = lines.filter((l) => l !== '').map((l) => splitBy(l, delimiter));
   const lens = rows.map((r) => r.length).sort((a, b) => a - b);
   const columns = Math.max(1, lens[Math.floor(lens.length / 2)] || 1);
   const head = rows[0] || [];
   let hasHeader;
   if (forceHeader === true || forceHeader === false) hasHeader = forceHeader;
-  else hasHeader = head.length > 0 && head.every((c) => !isNumeric(c, decimal)) && rows.slice(1, 20).some((r) => r.some((v) => isNumeric(v, decimal)));
+  else {
+    hasHeader = head.length > 0 && head.every((c) => !isNumeric(c, decimal)) && rows.slice(1, 20).some((r) => r.some((v) => isNumeric(v, decimal)));
+    // an all-TEXT table (codes and descriptions) has no number to tell its header by: in a .csv, a first
+    // row that is complete, unique, and never seen again in its columns below is taken as the header
+    if (!hasHeader && csvHint && head.length > 1 && head.every((c) => c !== '' && !isNumeric(c, decimal)) && new Set(head).size === head.length
+      && rows.slice(1, 50).every((r) => r.every((v, i) => v !== head[i]))) hasHeader = true;
+  }
   const dataRows = rows.slice(hasHeader ? 1 : 0, hasHeader ? 21 : 20);
   const schema = [];
   for (let c = 0; c < columns; c++) {
@@ -1259,7 +1283,8 @@ function detectKind(sample, { sniff, force, name } = {}) {
   if (f.kind === 'binary') return { kind: 'binary' };
   if (!f.kind && !f.delimiter && looksBinary(sample)) return { kind: 'binary' };
 
-  const decimal = f.decimal === ',' ? ',' : '.';   // decimal separator (',' = European/Brazilian)
+  const forcedDec = f.decimal === ',' || f.decimal === '.' ? f.decimal : null;   // '' / absent = auto
+  const decimal = forcedDec || '.';                // the GeoEAS + header guesses before a delimiter is known
   let text; try { text = new TextDecoder(f.encoding || 'utf-8').decode(sample); } catch { text = new TextDecoder().decode(sample); }   // forced encoding → correct header names
   const all = text.split('\n').slice(0, 200).map((l) => (l.endsWith('\r') ? l.slice(0, -1) : l));
 
@@ -1271,8 +1296,10 @@ function detectKind(sample, { sniff, force, name } = {}) {
 
   if (f.kind === 'text') return { kind: 'text', skip, comment, dataStart: skip };
 
-  const finish = (r) => ({ ...r, skip, comment, decimal, dataStart: skip + (r.hasHeader ? 1 : 0) });
-  if (f.delimiter) return finish(buildDelimited(lines, f.delimiter, f.hasHeader, decimal));
+  const finish = (r) => ({ ...r, skip, comment, decimal: r.decimal || decimal, dataStart: skip + (r.hasHeader ? 1 : 0) });
+  const csvHint = /\.(csv|tsv|tab|lam|lamina)$/i.test(name || '');   // .lam/.lamina = lamina's marker ext (delimited data)
+  const build = (delim) => { const dec = forcedDec || guessDecimal(lines, delim); return { ...buildDelimited(lines, delim, f.hasHeader, dec, csvHint), decimal: dec }; };
+  if (f.delimiter) return finish(build(f.delimiter));
 
   // recon enrichment (best-effort): if it finds a delimiter + fields, prefer it.
   if (typeof sniff === 'function') {
@@ -1292,8 +1319,7 @@ function detectKind(sample, { sniff, force, name } = {}) {
   // A .csv/.tsv/.tab extension is a strong "this is a table" signal — accept the
   // best delimiter even when column counts are inconsistent (ragged/quoted rows),
   // where a generic sniff would bail to text. Otherwise require ≥0.6 consistency.
-  const csvHint = /\.(csv|tsv|tab|lam|lamina)$/i.test(name || '');   // .lam/.lamina = lamina's marker ext (delimited data)
-  if (d && (d.consistent >= 0.6 || (csvHint && d.columns >= 2))) return finish(buildDelimited(lines, d.delimiter, f.hasHeader, decimal));
+  if (d && (d.consistent >= 0.6 || (csvHint && d.columns >= 2))) return finish(build(d.delimiter));
   return { kind: 'text', skip, comment, dataStart: skip };
 }
 

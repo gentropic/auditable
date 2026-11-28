@@ -294,7 +294,7 @@ try {
   const dec = await page.evaluate(async () => {
     let csv = 'id;grade\n';
     for (let i = 0; i < 200; i++) csv += `${i};${(i % 10) + ',5'}\n`;   // grades like "3,5"
-    window._lamina.open('br.csv', new TextEncoder().encode(csv), { delimiter: ';' });
+    window._lamina.open('br.csv', new TextEncoder().encode(csv), { delimiter: ';', decimal: '.' });   // a forced POINT (auto now finds the comma)
     const before = window._lamina.current.schema[1].type;               // 'string' (commas under point)
     window._lamina.reopen({ delimiter: ';', decimal: ',' });
     await new Promise((r) => setTimeout(r, 40));

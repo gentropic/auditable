@@ -200,10 +200,12 @@ export async function scanDataQuality(source, { schema, dataStart = 0, decimal =
       if (s !== t) { a.pad++; first(a, 'pad', disp); }
       if (a.distinct.size < 50) a.distinct.add(t);
       const x = parseNum(t, decimal);
-      if (Number.isNaN(x)) { a.nonNum++; first(a, 'nonNum', disp); if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
+      // "1,234" with a decimal POINT doesn't parse — so it's here, among the non-numbers, that it's a thousands separator
+      if (Number.isNaN(x) && a.num && decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) { a.thou++; first(a, 'thou', disp); }
+      else if (Number.isNaN(x)) { a.nonNum++; first(a, 'nonNum', disp); if (a.ex.size < 6) a.ex.add(t); if (DQ_DATE_RE.test(t)) a.dateLike++; }
       else {
         if (x < a.min) { a.min = x; a.minCount = 1; a.at.min = disp; } else if (x === a.min) a.minCount++;
-        if (a.num) { if (/^0[0-9]/.test(t)) { a.lead++; first(a, 'lead', disp); } if (decimal === '.' && /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(t)) { a.thou++; first(a, 'thou', disp); } }
+        if (a.num && /^0[0-9]/.test(t)) { a.lead++; first(a, 'lead', disp); }
       }
     }
   });
@@ -231,6 +233,7 @@ export async function scanDataQuality(source, { schema, dataStart = 0, decimal =
 
 // Quantiles interpolated from a histogram's bin counts over [min,max] — used by the
 // bulk precompute (exact percentiles would need a per-column value buffer). Approximate.
+const QUANT_BINS = 4096;   // ≈ quantiles to within (max − min)/4096 — 32 KB a column for the pass
 function quantilesFromHist(bins, min, max) {
   const n = bins.length, total = bins.reduce((s, v) => s + v, 0); if (!total) return null;
   const w = (max - min) / n;
@@ -277,7 +280,9 @@ export async function scanAllColumnStats(source, { schema, dataStart = 0, decima
   });
   // pass 2 — histogram bins for numeric columns that have a range
   const hcols = [];
-  for (let i = 0; i < cols; i++) { const a = acc[i]; if (a.num && a.nNum && a.max > a.min) { a.lin = new Float64Array(HIST_BINS); a.log = (a.posMin > 0 && a.posMin < a.max) ? new Float64Array(HIST_BINS) : null; hcols.push(i); } }
+  // the ≈ quantiles come from a FINE histogram (QUANT_BINS over [min, max]), not the 40 display bins: on a
+  // skewed grade most values share the first display bin and its interpolation is no median at all
+  for (let i = 0; i < cols; i++) { const a = acc[i]; if (a.num && a.nNum && a.max > a.min) { a.lin = new Float64Array(HIST_BINS); a.fine = new Float64Array(QUANT_BINS); a.log = (a.posMin > 0 && a.posMin < a.max) ? new Float64Array(HIST_BINS) : null; hcols.push(i); } }
   if (hcols.length) {
     await source.eachRecord({ dataStart, rows, signal, onProgress: (b, n) => onProgress && onProgress(n + b, n * 2) }, (disp, fields) => {
       for (let h = 0; h < hcols.length; h++) {
@@ -285,6 +290,7 @@ export async function scanAllColumnStats(source, { schema, dataStart = 0, decima
         if (raw == null || raw === '') continue;
         const x = parseNum(raw, decimal); if (Number.isNaN(x)) continue;
         const sp = (a.max - a.min) || 1; let k = Math.floor((x - a.min) / sp * HIST_BINS); if (k >= HIST_BINS) k = HIST_BINS - 1; if (k < 0) k = 0; a.lin[k]++;
+        let kf = Math.floor((x - a.min) / sp * QUANT_BINS); if (kf >= QUANT_BINS) kf = QUANT_BINS - 1; if (kf < 0) kf = 0; a.fine[kf]++;
         if (a.log && x > 0) { const l0 = Math.log(a.posMin), ls = (Math.log(a.max) - l0) || 1; let kk = Math.floor((Math.log(x) - l0) / ls * HIST_BINS); if (kk >= HIST_BINS) kk = HIST_BINS - 1; if (kk < 0) kk = 0; a.log[kk]++; }
       }
     });
@@ -297,7 +303,7 @@ export async function scanAllColumnStats(source, { schema, dataStart = 0, decima
       const skew = (a.nNum > 2 && a.m2 > 0) ? (Math.sqrt(a.nNum) * a.m3) / Math.pow(a.m2, 1.5) : null;
       const histogram = a.lin ? { bins: Array.from(a.lin), min: a.min, max: a.max, log: false } : null;
       const logHistogram = a.log ? { bins: Array.from(a.log), min: a.posMin, max: a.max, log: true } : null;
-      const quantiles = a.lin ? quantilesFromHist(a.lin, a.min, a.max) : null;
+      const quantiles = a.fine ? quantilesFromHist(a.fine, a.min, a.max) : null;
       return { kind: 'number', count: a.count, nulls: a.nulls, bad: a.bad, badSamples: [...a.badSamples], excluded: 0, excludeZero: false, excludeNeg: false, zeros: a.zeros, cv, skew, n: a.nNum, min: a.nNum ? a.min : null, max: a.nNum ? a.max : null, mean: a.nNum ? a.mean : null, std, sum: a.sum, quantiles, histogram, logHistogram, quantilesApprox: true, precomputed: true };
     }
     const tot = [...a.freq.values()].reduce((s, v) => s + v, 0) || 1;
