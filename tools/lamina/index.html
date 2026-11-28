@@ -8,11 +8,13 @@
      beacon) — your data cannot leave the page. The rest only lets the inlined runtime boot:
      the script is in the clear (no eval/self-extractor) and isolates its modules as blob:
      ES modules; nothing external loads. Enterprise: air-gapped, file share, behind any proxy. -->
-<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'unsafe-inline'; img-src data:; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' 'unsafe-inline' blob:; style-src 'self' 'unsafe-inline'; img-src data:; worker-src 'self' blob:; child-src 'self' blob:; manifest-src 'self'; connect-src 'none'; base-uri 'none'; form-action 'none'">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>lamina</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect x='2' y='2' width='28' height='8' fill='%23d97a3c'/%3E%3Crect x='2' y='12' width='8' height='18' fill='%238a9099'/%3E%3Crect x='12' y='12' width='8' height='18' fill='%238a9099'/%3E%3Crect x='22' y='12' width='8' height='18' fill='%238a9099'/%3E%3C/svg%3E">
 <meta name="theme-color" content="#121212">
+<link rel="stylesheet" href="../../ext/rails/rails.css">
+<link rel="stylesheet" href="../../ext/rails/rails-default.css">
 <script>/* first paint: set the theme before render (no flash). app.js takes over after boot. */(function(){try{var t=localStorage.getItem('lamina.theme')||'auto';document.documentElement.dataset.theme=(t==='auto'?(matchMedia('(prefers-color-scheme: light)').matches?'light':'dark'):t);}catch(e){}})();</script>
 <style>
   :root {
@@ -366,6 +368,23 @@
   #colPanel .cp-pin:hover { opacity: .7; }
   #colPanel .cp-pin.on { opacity: 1; filter: none; }
   #colPanel .cp-row.pinned { background: var(--accent-faint); }
+  /* the workspace: @gcu/rails tabs + splits, one VIEW per tab (js/app.js installView). rails' own
+     tokens follow lamina's theme. */
+  #grid .rails-root, .rails-root {
+    --rails-bg: var(--bg); --rails-surface: var(--bg); --rails-chrome: var(--bg-bar); --rails-border: var(--border);
+    --rails-border-strong: var(--bd2); --rails-text: var(--text); --rails-text-dim: var(--muted); --rails-text-faint: var(--faint);
+    --rails-accent: var(--accent); --rails-accent-bg: var(--accent-soft); --rails-danger: var(--fault); --rails-font-mono: var(--mono);
+    font-size: 12px;
+  }
+  .lv-panel { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+  .lv-panel .lv-grid { position: absolute; inset: 0; }
+  .lv-panel .lv-note { display: none; position: absolute; inset: 0; flex-direction: column; align-items: center; justify-content: center;
+    gap: 8px; color: var(--muted); font-family: var(--mono); font-size: 13px; text-align: center; padding: 0 16px; }
+  .lv-panel .lv-note b { color: var(--muted); }
+  .lv-panel.is-note .lv-note { display: flex; }
+  .lv-panel.is-note .lv-grid { display: none; }
+  /* several views on screen → the focused one is marked (one view alone needs no mark) */
+  #grid.multi .lv-panel.focused { box-shadow: inset 0 2px 0 var(--accent); }
   #empty, #binary {
     position: absolute; inset: var(--tb) 0 var(--ft) 0; display: flex; flex-direction: column;
     align-items: center; justify-content: center; gap: 8px; color: var(--faint); font-family: var(--mono);
@@ -482,6 +501,7 @@
   "@gcu/sheet":   "../../ext/sheet/index.js",
   "@gcu/parquet": "../../ext/parquet/index.js",
   "@gcu/leadacid": "../../ext/leadacid/index.js",
+  "@gcu/rails":    "../../ext/rails/index.js",
   "fflate":       "../../ext/archive/vendor/fflate.module.mjs"
 } }
 </script>
@@ -561,7 +581,6 @@
 
   <div id="grid"></div>
   <div id="empty"><b>open any file</b><span>Open… · or drag a file anywhere — CSV/TSV → table, Excel .xlsx → pick a sheet, Datamine .dm → table, text → lines, .zip/.tar/.gz/… → peek inside</span><span class="empty-cta">No file handy? &nbsp;<a id="emptySample" href="#">▸ open a sample block model</a> &nbsp;— 120,000 rows to explore</span><span style="color:var(--faint)">new here? &nbsp;Help → Getting started · most actions are on right-click</span><span class="empty-sec">Evaluating this for work? → <a href="https://gentropic.org/security" target="_blank" rel="noopener noreferrer">gentropic.org/security</a> — verify it, and how to bring it through approval</span><span class="empty-sec empty-dl">One file, no install — <a href="https://gentropic.org/lamina/lamina.html" download="lamina.html">download lamina.html</a> to keep, share, or run offline</span><div id="emptyRecents" class="empty-recents"></div></div>
-  <div id="binary"><b>binary file</b><span id="binaryMsg">use the hex viewer for this one</span></div>
   <div id="drop-hint">drop to open</div>
   <div id="picker"><div class="pk-box"><div class="pk-title">choose a file from the archive</div><div class="pk-list" id="pickerList"></div></div></div>
 

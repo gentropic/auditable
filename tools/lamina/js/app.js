@@ -23,6 +23,7 @@ import { Unzip, UnzipInflate } from 'fflate';
 import { idbCache } from './idb-cache.js';
 import { looksParquet, fileBuffer, openParquetTable, createParquetSource } from './parquet-source.js';
 import { createHostApi } from './host-api.js';
+import { createRails, findTab, isSplit } from '@gcu/rails';
 
 // Below this COMPRESSED size we decompress the archive whole (resident — best UX:
 // true random access + cacheable index). Above it we WINDOW the entry through the
@@ -45,7 +46,7 @@ const residentLimit = () => (typeof window.__LAMINA_RESIDENT_LIMIT__ === 'number
 const __LAMINA_BUILD__ = 'dev';
 
 const $ = (s) => document.querySelector(s);
-let grid = null;
+let grid = null;                // the FOCUSED view's grid (every table view owns one: c.grid)
 
 // ── theme (light / dark / auto) — no settings dialog; a View menu toggle. The
 // chrome reads CSS vars (--bg etc., flipped by :root[data-theme]); the grid uses
@@ -57,12 +58,24 @@ function applyTheme() {
   document.documentElement.dataset.theme = eff;
   const tc = document.querySelector('meta[name="theme-color"]');
   if (tc) tc.content = (getComputedStyle(document.documentElement).getPropertyValue('--bg').trim() || (eff === 'light' ? '#f4f4f3' : '#121212'));
-  rerender();                                          // re-create the grid with loom's matching palette
+  for (const v of views.values()) rerender(v);         // re-create every grid with loom's matching palette
 }
 function setTheme(t) { theme = t; try { localStorage.setItem('lamina.theme', t); } catch { /* ignore */ } applyTheme(); }
 matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if (theme === 'auto') applyTheme(); });
 let lastScan = null;            // 'worker'|'inline'|'cache'|'resident'|'stream' — last index-scan path (automation hook)
-let current = null;             // { source, d, dataStart, baseVs, label, totalBytes } — the open file (for filtering)
+let current = null;             // the FOCUSED table view { source, d, dataStart, baseVs, label, totalBytes, … } — null on a note or with nothing open
+// ── views: one per rails tab. A TABLE view is the shape `current` always had (one open file, its
+// filter/sort/calcs/formats, its own grid); a NOTE view is a panel saying why a file showed no table.
+// Views never read each other: everything a view shows is its own (spec_inbox/lamina-workspace-spec.md §0).
+const views = new Map();        // tabId → view
+let focused = null;             // the focused view (table or note); `current` is it when it's a table
+let rails = null;               // the @gcu/rails workspace (created at boot, in #grid)
+let _viewSeq = 0;
+// where the next mounted file goes: 'tab' (a user opened it — File → Open, a drop, a recent) or
+// 'replace' (the focused view reads again: a changed interpretation, a lens re-read, the host API)
+let _openNext = 'replace';
+const alive = (c) => !!c && views.get(c.tabId) === c;
+const say = (c, text) => { if (c === current) $('#meta').textContent = text; };   // the footer speaks for the focused view only
 let _host = null;               // the host API (window.lamina) — created at the end of the module
 let _hostNote = null;           // the last note panel's text: why an open showed a note instead of a table
 
@@ -99,19 +112,99 @@ function fmtBytes(n) {
 // The non-grid panel: binary handoff, archive guards, empty-archive notes.
 function showNote(name, badge, title, msg, meta) {
   _hostNote = `${title}: ${msg}`; if (_host) _host.fire('open-failed', { name, reason: title, detail: msg });
-  if (grid) { grid.destroy(); grid = null; }
-  current = null; $('#filter').value = ''; syncFilterClear();   // nothing filterable on a note panel
-  $('#fileName').textContent = name;
-  $('#empty').style.display = 'none';
-  $('#grid').innerHTML = '';
-  $('#binary').style.display = 'flex';
-  $('#binary').querySelector('b').textContent = title;
-  $('#binaryMsg').textContent = msg;
-  const b = $('#kindBadge'); b.style.display = ''; b.textContent = badge;
-  $('#meta').textContent = meta;
+  const v = { note: { badge, title, msg, meta }, label: name };
+  installView(v);                                       // a tab of its own (or in place of the focused view), saying why
 }
 function showBinary(name, totalBytes) {
   showNote(name, 'binary', 'binary file', 'use the hex viewer for this one', `${fmtBytes(totalBytes)} · binary`);
+}
+
+// ── views ─────────────────────────────────────────────────────────────────────────
+// A file the user opens lands in a NEW tab; a file read again (interpretation, lens
+// re-read, the host API) replaces the focused view in place, keeping its tab.
+function openInTab(file, force) { _openNext = 'tab'; return openFile(file, force); }
+
+function makePanel(tabId) {
+  const el = document.createElement('div');
+  el.className = 'lv-panel'; el.dataset.tab = tabId;
+  el.innerHTML = '<div class="lv-grid"></div><div class="lv-note"><b></b><span></span></div>';
+  // a press anywhere in a panel focuses its view BEFORE the grid handles it, so a
+  // click into the second of two splits acts on that table
+  el.addEventListener('pointerdown', () => { const v = views.get(el.dataset.tab); if (v && v !== focused) setFocus(v); }, true);
+  return el;
+}
+const tabTitle = (v) => v.label || 'untitled';
+
+function installView(v) {
+  const mode = _openNext; _openNext = 'replace';
+  const prev = focused;
+  if (prev) saveChrome(prev);
+  if (mode === 'replace' && prev && alive(prev)) {      // read again: same tab, same panel
+    if (prev.grid) { prev.grid.destroy(); prev.grid = null; }
+    v.tabId = prev.tabId; v.panel = prev.panel;
+    views.set(v.tabId, v);
+    rails.updateTab(v.tabId, { title: tabTitle(v) });
+  } else {
+    v.tabId = 'v' + (++_viewSeq); v.panel = makePanel(v.tabId);
+    views.set(v.tabId, v);
+    const at = prev && rails.state.root ? findTab(rails.state, prev.tabId) : null;
+    rails.addTab({ id: v.tabId, title: tabTitle(v) }, at && at.container === 'dock' ? { to: 'stack', stackId: at.stack.id } : undefined);
+  }
+  if (v.note) {
+    v.panel.classList.add('is-note');
+    v.panel.querySelector('.lv-note b').textContent = v.note.title;
+    v.panel.querySelector('.lv-note span').textContent = v.note.msg;
+  }
+  rails.activateTab(v.tabId);
+  setFocus(v);
+  syncMulti();
+}
+
+// Focus a view: the toolbar, footer, filter box and side panels now speak for it.
+function setFocus(v) {
+  if (focused && focused !== v && alive(focused)) saveChrome(focused);
+  focused = v || null;
+  current = v && !v.note ? v : null;
+  grid = current ? current.grid || null : null;
+  for (const x of views.values()) x.panel.classList.toggle('focused', x === v);
+  const box = $('#filter');
+  box.value = (current && current.filterText) || ''; box.classList.toggle('err', !!(current && current.filterErrOn)); syncFilterClear();
+  if (_findOpen) closeFind();                           // find walks one view; it doesn't follow a switch
+  if (!v) {
+    $('#fileName').textContent = 'no file'; $('#kindBadge').style.display = 'none'; $('#meta').textContent = '—';
+    $('#selStats').textContent = ''; $('#empty').style.display = ''; window._laminaVS = null; updateEncHint();
+  } else syncViewChrome(v);
+  if (_colPanelOpen) renderColPanel();
+  if (_recPanelOpen) { if (current) { const s = grid && grid.getSelection(); renderRecordCard(s ? s.r0 : 0); } else toggleRecordPanel(false); }
+}
+function saveChrome(v) { if (!v || v.note) return; v.filterText = $('#filter').value; v.filterErrOn = $('#filter').classList.contains('err'); }
+// several views on screen → the focused panel gets a mark (one alone needs none)
+function syncMulti() { $('#grid').classList.toggle('multi', views.size > 1); }
+
+// The active tab of the stack a view sits in — the view to fall back on when a tab closes.
+function anyActiveView() {
+  const ids = [];
+  const walk = (n) => { if (!n) return; if (isSplit(n)) n.children.forEach(walk); else ids.push(n.active); };
+  walk(rails.state.root);
+  for (const f of rails.state.floats || []) ids.push(f.stack.active);
+  for (const id of ids) { const v = views.get(id); if (v) return v; }
+  return null;
+}
+function dropView(tabId) {
+  const v = views.get(tabId); if (!v) return;
+  if (v.grid) { v.grid.destroy(); v.grid = null; }
+  views.delete(tabId);
+  if (focused === v) { focused = null; current = null; grid = null; }
+}
+function initWorkspace() {
+  rails = createRails($('#grid'), {
+    renderPanel: (tab) => (views.get(tab.id) || {}).panel || document.createElement('div'),
+    onPanelDestroy: (tab) => dropView(tab.id),
+    // a phone or the shell's narrow window: tabs only — no splits, no floats (spec §2)
+    canDropOn: (zone) => !(innerWidth < 720 && /edge|gap|float/.test(zone.type)),
+  });
+  rails.on('tab:activate', ({ tab }) => { const v = views.get(tab.id); if (v && v !== focused) setFocus(v); });
+  rails.on('tab:close', () => { if (!focused || !alive(focused)) setFocus(anyActiveView()); syncMulti(); });
 }
 
 // Mount a built source (memory / streaming / tape) read-only. Builds the base
@@ -121,7 +214,7 @@ function mount(name, d, src, totalBytes) {
   const schema = kind === 'delimited' ? d.schema : [{ name: 'line', type: 'string' }];
   const dataStart = d.dataStart != null ? d.dataStart : (kind === 'delimited' && d.hasHeader ? 1 : 0);
   const baseVs = createRecordViewSource(src, { schema, dataStart });
-  current = { source: src, d, schema, dataStart, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {} };
+  installView({ source: src, d, schema, dataStart, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {} });
   _recPinned = null; _recRow = 0;                        // fresh file → drop any pinned compare record
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();   // fresh file → clear filter + sort
   initCalcState();
@@ -134,32 +227,32 @@ function mount(name, d, src, totalBytes) {
 // Derive the active view from base + filter + sort and render it. Filter and sort
 // compose: sort runs over the current filter's matches (so "filter then sort" is
 // the path for files too big to sort whole).
-async function recompute() {
-  const c = current;
-  if (!c) return;
+async function recompute(c = current) {
+  if (!c || c.note) return;
   let view = c.baseVs;
   let info = {};
   const fr = c.filterResult;                            // { offsets, lengths, nums } or null
   if (c.sort && c.sort.length) {                         // c.sort is an array of { col, dir } keys (multi-column)
     const ac = newFooterScan();
-    $('#meta').textContent = 'sorting…';
+    say(c, 'sorting…');
     try {
       const keys = c.sort.map((s) => ({ col: s.col, dir: s.dir, numeric: (c.schema[s.col] && c.schema[s.col].type) === 'number' }));
       const order = await scanSortKeys(c.source, {
         keys, dataStart: c.dataStart, decimal: c.d.decimal, rows: fr ? fr.nums : null, signal: ac.signal,
-        onProgress: (b, n) => { $('#meta').textContent = `sorting… ${n ? Math.round((100 * b) / n) : 0}% · Esc to cancel`; },
+        onProgress: (b, n) => { say(c, `sorting… ${n ? Math.round((100 * b) / n) : 0}% · Esc to cancel`); },
       });
       view = createResultView(c.source, order, c.schema);
       info = { filtered: !!fr, sorted: true };
     } catch (e) {
       c.sort = null; view = fr ? createResultView(c.source, fr, c.schema) : c.baseVs; info = { filtered: !!fr };
-      if (!(e && e.name === 'AbortError')) $('#meta').textContent = `sort: ${e.message}`;   // abort → fall back to unsorted silently
+      if (!(e && e.name === 'AbortError')) say(c, `sort: ${e.message}`);   // abort → fall back to unsorted silently
     } finally { if (_footerScanAbort === ac) _footerScanAbort = null; }
   } else if (fr) {
     view = createResultView(c.source, fr, c.schema);
     info = { filtered: true };
   }
-  mountView(view, info);
+  if (!alive(c)) return;                                 // its tab closed mid-sort
+  mountView(view, info, false, c);
 }
 
 // Estimate resident memory for the never-resident headline: the coarse block index
@@ -180,18 +273,13 @@ function residentEstimate(c) {
 // (Re)create the grid for a view + wire header sort/context + column hide/show +
 // update the footer. The provider is wrapped to (a) remap display columns past
 // hidden ones and (b) stamp the sort arrow onto the active column.
-function mountView(vs, info = {}, keepVScroll = false) {
-  captureWidths();                                       // persist the outgoing grid's column widths
-  const prevScroll = grid ? grid.getScroll() : null;     // keep horizontal scroll across the rebuild (filter/sort/hide)
-  if (grid) { grid.destroy(); grid = null; }
-  const c = current;
+function mountView(vs, info = {}, keepVScroll = false, c = current) {
+  if (!c || c.note) return;
+  captureWidths(c);                                      // persist the outgoing grid's column widths
+  const prevScroll = c.grid ? c.grid.getScroll() : null; // keep horizontal scroll across the rebuild (filter/sort/hide)
+  if (c.grid) { c.grid.destroy(); c.grid = null; if (grid && c === current) grid = null; }
   c.view = vs; c.info = info;                           // remember for a cheap re-render (hide/show)
-  $('#fileName').textContent = c.label;
-  $('#binary').style.display = 'none';
-  $('#empty').style.display = 'none';
-  const badge = $('#kindBadge'); badge.style.display = '';
-  badge.textContent = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
-  badge.title = detectedFacts(c.d).map(([k, v]) => `${k}: ${v}`).join(' · ') + ' — click to change how the file is read';
+  c.panel.classList.remove('is-note');
 
   const base = createLaminaProvider(vs, { PENDING });
   const total = c.baseVs.cols;
@@ -227,27 +315,27 @@ function mountView(vs, info = {}, keepVScroll = false) {
     onReady(cb) { return base.onReady(cb); },
   };
 
-  grid = createGrid($('#grid'), provider, { readOnly: true, theme: effectiveTheme(), defaultColW: c.d.kind === 'text' ? 900 : 130, headerGutterH: (showGutter && c.d.kind === 'delimited') ? GUTTER_H : 0, pinnedCols: c._pinnedCount || 0, axisLock: scrollLock });
+  const g = c.grid = createGrid(c.panel.querySelector('.lv-grid'), provider, { readOnly: true, theme: effectiveTheme(), defaultColW: c.d.kind === 'text' ? 900 : 130, headerGutterH: (showGutter && c.d.kind === 'delimited') ? GUTTER_H : 0, pinnedCols: c._pinnedCount || 0, axisLock: scrollLock });
   // reapply persisted column widths (stored by UNDERLYING col → display indices)
   const dw = {};
   for (let dc = 0; dc < vis.length; dc++) { const w = c.colWidths[vis[dc]]; if (w != null) dw[dc] = w; }
-  if (Object.keys(dw).length) grid.setColWidths(dw);
+  if (Object.keys(dw).length) g.setColWidths(dw);
   // Restore scroll: horizontal always (same columns), vertical only on a pure
   // re-render (hide/show/pin/format) — a filter/sort changes the row set, so it
   // starts at the top. The browser clamps if the new extent is smaller.
-  if (prevScroll) grid.setScroll({ left: prevScroll.left, top: keepVScroll ? prevScroll.top : 0 });
+  if (prevScroll) g.setScroll({ left: prevScroll.left, top: keepVScroll ? prevScroll.top : 0 });
   if (c.d.kind === 'delimited') {
     // No sort-on-label-click — confusing for a viewer; sort lives in the header
     // right-click menu (Sort ↑/↓). The label click is inert; the gutter click → stats.
-    grid.onHeaderContextMenu(({ col, clientX, clientY }) => showColumnMenu(vis[col], clientX, clientY));
+    g.onHeaderContextMenu(({ col, clientX, clientY }) => showColumnMenu(vis[col], clientX, clientY));
   }
-  grid.onContextMenu(({ row, col, sel, clientX, clientY }) => showCellMenu(row, col, sel, clientX, clientY));
+  g.onContextMenu(({ row, col, sel, clientX, clientY }) => showCellMenu(row, col, sel, clientX, clientY));
   if (c.d.kind === 'delimited') {
-    grid.onGutterClick((dc, frac) => gutterClick(vis[dc], frac));       // tap → filter (hist: the bin · cat: the category) — debounced for dbl-click
-    grid.onGutterDblClick((dc) => gutterDblClick(vis[dc]));             // double-click → Statistics popup
-    grid.onGutterBrush((dc, lo, hi) => gutterBrush(vis[dc], lo, hi));   // hist drag → `between` · cat drag → `in (…)`
-    grid.onGutterBrushMove((dc, lo, hi, x, y) => showBrushTip(vis[dc], lo, hi, x, y));   // live readout while dragging
-    grid.onGutterHover((dc, frac, x, y) => showGutterTip(dc == null ? null : vis[dc], frac, x, y));   // hover → value / category tooltip
+    g.onGutterClick((dc, frac) => gutterClick(vis[dc], frac));       // tap → filter (hist: the bin · cat: the category) — debounced for dbl-click
+    g.onGutterDblClick((dc) => gutterDblClick(vis[dc]));             // double-click → Statistics popup
+    g.onGutterBrush((dc, lo, hi) => gutterBrush(vis[dc], lo, hi));   // hist drag → `between` · cat drag → `in (…)`
+    g.onGutterBrushMove((dc, lo, hi, x, y) => showBrushTip(vis[dc], lo, hi, x, y));   // live readout while dragging
+    g.onGutterHover((dc, frac, x, y) => showGutterTip(dc == null ? null : vis[dc], frac, x, y));   // hover → value / category tooltip
   }
 
   const shownRows = vs.rowCount();
@@ -260,18 +348,31 @@ function mountView(vs, info = {}, keepVScroll = false) {
   const resident = residentEstimate(c);                  // the never-resident superpower, made visible
   const resTerm = (resident != null && resident < c.totalBytes * 0.6) ? ` · ~${fmtBytes(resident)} resident` : '';
   c._meta = `${rows} × ${cols} · ${fmtBytes(c.totalBytes)}${resTerm} · ${kindLabel}${skipped}`;   // remembered so a copy-flash can restore it
-  $('#meta').textContent = c._meta;
-  grid.onSelect(onSelectionChanged);                    // drives the record card + footer selection stats
+  g.onSelect((sel) => { if (c === current) onSelectionChanged(sel); });   // drives the record card + footer selection stats
+  if (c !== current) return;                             // a view behind another tab: its grid is ready, the chrome isn't its to set
+  grid = g;
+  syncViewChrome(c);
   $('#selStats').textContent = '';                      // fresh grid → no selection yet
-  window._laminaVS = vs;                                // automation hook
   if (_colPanelOpen) renderColPanel();                  // keep the columns panel in sync (gutter-ready, menu-hide, new file)
   if (_recPanelOpen) renderRecordCard(_recRow);         // re-resolve the record after a sort/filter/new file
+}
+
+// The toolbar + footer belong to the focused view: its name, kind badge, row count, encoding hint.
+function syncViewChrome(c) {
+  $('#fileName').textContent = c.label;
+  $('#empty').style.display = 'none';
+  const badge = $('#kindBadge'); badge.style.display = '';
+  if (c.note) { badge.textContent = c.note.badge; badge.title = ''; $('#meta').textContent = c.note.meta; window._laminaVS = null; updateEncHint(); return; }
+  badge.textContent = c.d.dm ? 'dm' : c.d.parquet ? 'parquet' : c.d.xlsx ? `xlsx · ${c.d.xlsx}` : c.d.kind === 'delimited' ? `CSV · ${c.d.delimiter === '\t' ? 'TSV' : 'delimited'}` : c.d.kind;
+  badge.title = detectedFacts(c.d).map(([k, v]) => `${k}: ${v}`).join(' · ') + ' — click to change how the file is read';
+  $('#meta').textContent = c._meta || '';
+  window._laminaVS = c.view || null;                    // automation hook
   updateEncHint();
 }
 
 // Cheap re-render of the current view (after a column hide/show — the data view
 // is unchanged, only which columns show).
-function rerender() { if (current && current.view) mountView(current.view, current.info, true); }   // row set unchanged → keep both scroll axes
+function rerender(c = current) { if (c && !c.note && c.view && alive(c)) mountView(c.view, c.info, true, c); }   // row set unchanged → keep both scroll axes
 // Override a column's detected type (number ↔ text). The schema array is shared
 // live with the views, so this changes alignment + how stats/sort treat it;
 // recompute re-applies a sort on that column under the new type.
@@ -705,10 +806,10 @@ document.addEventListener('copy', () => {                 // loom's Ctrl+C (menu
 });
 // Persist the live grid's column widths into `current.colWidths` (keyed by
 // UNDERLYING col, so they survive hide/show + sort/filter re-renders).
-function captureWidths() {
-  if (!grid || !current || !current._vis) return;
-  const w = grid.getColWidths();                         // display-keyed
-  for (const k in w) { const uc = current._vis[k]; if (uc != null) current.colWidths[uc] = w[k]; }
+function captureWidths(c = current) {
+  if (!c || !c.grid || !c._vis) return;
+  const w = c.grid.getColWidths();                       // display-keyed
+  for (const k in w) { const uc = c._vis[k]; if (uc != null) c.colWidths[uc] = w[k]; }
 }
 // Size every visible column to its content (header + visible cells — cheap, loom
 // samples only what's on screen). Reset returns them to the default width.
@@ -846,18 +947,18 @@ function toggleSort(col) {
 
 // Apply a filter expression (forward scan → matching rows), then recompute (sort
 // re-applies over the new matches). Empty clears. Bad column/expr marks red.
-async function applyFilter(str) {
-  const c = current;
-  if (!c) return;
+async function applyFilter(str, c = current) {
+  if (!c || c.note) return;
   if (c._statsCache) c._statsCache.clear();              // filter changes the matched set → cached stats are stale
-  if (!str.trim()) { $('#filter').classList.remove('err'); c.filterResult = null; const r = recompute(); refreshGutterFiltered(); return r; }
+  c.filterText = str;
+  if (!str.trim()) { filterOk(c); c.filterResult = null; const r = recompute(c); refreshGutterFiltered(c); return r; }
   const cols = c.d.kind === 'delimited' ? c.d.schema : [{ name: 'line' }];
   const v = validate(str, cols);                          // parse + unknown-column → red box, friendly message
-  if (!v.ok) return filterErr(new Error(friendlyError(v.errors, cols, str)));
+  if (!v.ok) return filterErr(new Error(friendlyError(v.errors, cols, str)), c);
   let predicate;
-  try { predicate = compileBool(str, cols, { decimal: c.d.decimal }); } catch (e) { return filterErr(e); }
-  $('#filter').classList.remove('err');
-  $('#meta').textContent = 'filtering…';
+  try { predicate = compileBool(str, cols, { decimal: c.d.decimal }); } catch (e) { return filterErr(e, c); }
+  filterOk(c);
+  say(c, 'filtering…');
   // on a .dm or a Parquet, PROJECT the scan to the predicate's referenced columns
   // (.dm: strided decode; Parquet: only those column chunks). Skip when calc columns
   // are in play (their formulas may reach any column → full decode is required).
@@ -876,15 +977,17 @@ async function applyFilter(str) {
       predicate, dataStart: c.dataStart, signal: ac.signal, cols: projCols,
       // a Parquet skips whole row groups whose footer min/max prove no match
       prune: c.parquet ? (ranges) => canMatch(str, ranges) : null,
-      onProgress: (b, n) => { $('#meta').textContent = `filtering… ${n ? Math.round((100 * b) / n) : 0}% · Esc to cancel`; },
+      onProgress: (b, n) => { say(c, `filtering… ${n ? Math.round((100 * b) / n) : 0}% · Esc to cancel`); },
     });
-    const r = recompute(); refreshGutterFiltered(); return r;   // overlay the matched-rows distribution on the gutters
+    const r = recompute(c); refreshGutterFiltered(c); return r;   // overlay the matched-rows distribution on the gutters
   } catch (e) {
-    if (e && e.name === 'AbortError') { $('#meta').textContent = c._meta || 'filter cancelled'; return; }   // keep the prior view
-    filterErr(e);
+    if (e && e.name === 'AbortError') { say(c, c._meta || 'filter cancelled'); return; }   // keep the prior view
+    filterErr(e, c);
   } finally { if (_footerScanAbort === ac) _footerScanAbort = null; }
 }
-function filterErr(e) { $('#filter').classList.add('err'); $('#meta').textContent = `filter: ${e.message}`; }
+// a view's filter error is its own: kept on the view, shown in the box while it's focused
+function filterErr(e, c = current) { if (c) c.filterErrOn = true; if (c === current) $('#filter').classList.add('err'); say(c, `filter: ${e.message}`); }
+function filterOk(c = current) { if (c) c.filterErrOn = false; if (c === current) $('#filter').classList.remove('err'); }
 
 // Open raw bytes — memory source (the test hook + small files). `force` overrides
 // auto-detection (the interpretation popover re-opens with it).
@@ -1078,13 +1181,12 @@ function createSheetCursor(tbl, schema) {
   };
 }
 function mountSheet(name, tbl, totalBytes = 0) {
-  if (grid) { grid.destroy(); grid = null; }
   const num = new Set(tbl.header.numericColumns.map((c) => c.i));
   const schema = tbl.header.columns.map((nm, i) => ({ name: nm, type: num.has(i) ? 'number' : 'string' }));
   const baseVs = createSheetViewSource(tbl, schema);
   const source = createSheetCursor(tbl, schema);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema, dataStart: 0, decimal: '.', xlsx: tbl.header.sheet };
-  current = { source, d, schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {} };
+  installView({ source, d, schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {} });
   _recPinned = null; _recRow = 0;
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'sheet';
@@ -1120,11 +1222,10 @@ async function openXlsx(file) {
 // Mount a .dm: the windowed browse view + the record cursor (filter/sort/stats).
 // Any size — no resident decode, no TSV, no cap.
 function mountDm(name, reader, h, totalBytes) {
-  if (grid) { grid.destroy(); grid = null; }
   const baseVs = createDmViewSource(reader, h);
   const source = createDmCursor(reader, h);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: h.schema, dataStart: 0, decimal: '.', dm: true };
-  current = { source, d, schema: h.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, dm: true };
+  installView({ source, d, schema: h.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, dm: true });
   _recPinned = null; _recRow = 0;                        // fresh file → drop any pinned compare record
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'dm';
@@ -1147,10 +1248,9 @@ async function openParquet(name, buf, totalBytes) {
   mountParquet(name, buf, t, totalBytes);
 }
 function mountParquet(name, buf, t, totalBytes) {
-  if (grid) { grid.destroy(); grid = null; }
   const { view: baseVs, cursor: source } = createParquetSource(buf, t);
   const d = { kind: 'delimited', delimiter: '\t', quote: '"', hasHeader: true, schema: t.schema, dataStart: 0, decimal: '.', parquet: t.facts };
-  current = { source, d, schema: t.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, parquet: true };
+  installView({ source, d, schema: t.schema, dataStart: 0, baseVs, label: name, totalBytes, filterResult: null, sort: null, hidden: new Set(), colWidths: {}, colFormats: {}, _vis: null, file: null, bytes: null, force: {}, parquet: true });
   _recPinned = null; _recRow = 0;
   $('#filter').value = ''; $('#filter').classList.remove('err'); syncFilterClear();
   lastScan = 'parquet';
@@ -2266,7 +2366,7 @@ async function openRecent(entry) {
       }
       const f = await h.getFile();
       addRecent(f, h);
-      return openFile(f);
+      return openInTab(f);
     } catch { $('#meta').textContent = `couldn't reopen “${entry.name}” — pick it again`; return pickFile(); }
   }
   $('#meta').textContent = `“${entry.name}” has no saved handle — pick it again`;
@@ -2291,7 +2391,7 @@ function renderEmptyRecents() {
 
 async function pickFile() {
   if (window.showOpenFilePicker) {
-    try { const [h] = await window.showOpenFilePicker({ types: PICK_TYPES }); if (h) { const f = await h.getFile(); addRecent(f, h); openFile(f); } } catch { /* cancelled */ }
+    try { const [h] = await window.showOpenFilePicker({ types: PICK_TYPES }); if (h) { const f = await h.getFile(); addRecent(f, h); openInTab(f); } } catch { /* cancelled */ }
   } else {
     // The <input> fallback (Firefox + ALL mobile, where showOpenFilePicker doesn't
     // exist). NO `accept` filter: lamina opens anything, and on Android the OS
@@ -2299,7 +2399,7 @@ async function pickFile() {
     // what greys out a .dm. Showing everything is both on-brand and the .dm fix.
     const inp = document.createElement('input');
     inp.type = 'file';
-    inp.onchange = () => { if (inp.files[0]) { addRecent(inp.files[0], null); openFile(inp.files[0]); } };
+    inp.onchange = () => { if (inp.files[0]) { addRecent(inp.files[0], null); openInTab(inp.files[0]); } };
     inp.click();
   }
 }
@@ -2349,9 +2449,9 @@ $('#mTools').onclick = () => menuAt($('#mTools'), [
   { label: 'Data quality…', action: () => { if (hasFile()) showDataQuality(); } },
 ]);
 $('#mView').onclick = () => menuAt($('#mView'), [
-  { label: (showGutter ? '✓ ' : '') + 'Column distributions', action: () => { showGutter = !showGutter; refreshGutter(); } },
+  { label: (showGutter ? '✓ ' : '') + 'Column distributions', action: () => { showGutter = !showGutter; for (const v of views.values()) refreshGutter(v); } },
   { label: (autoLog ? '✓ ' : '') + 'Auto log-scale skewed columns', action: () => { autoLog = !autoLog; try { localStorage.setItem('lamina.autoLog', autoLog ? 'on' : 'off'); } catch { /* ignore */ } if (current) { current.gutterLog = null; refreshGutter(); } } },
-  { label: (scrollLock ? '✓ ' : '') + 'Lock scroll to one axis', action: () => { scrollLock = !scrollLock; try { localStorage.setItem('lamina.scrollLock', scrollLock ? 'on' : 'off'); } catch { /* ignore */ } if (grid) grid.setAxisLock(scrollLock); } },
+  { label: (scrollLock ? '✓ ' : '') + 'Lock scroll to one axis', action: () => { scrollLock = !scrollLock; try { localStorage.setItem('lamina.scrollLock', scrollLock ? 'on' : 'off'); } catch { /* ignore */ } for (const v of views.values()) if (v.grid) v.grid.setAxisLock(scrollLock); } },
   { label: 'Theme', submenu: [
     { label: (theme === 'auto' ? '✓ ' : '') + 'Auto (system)', action: () => setTheme('auto') },
     { label: (theme === 'dark' ? '✓ ' : '') + 'Dark', action: () => setTheme('dark') },
@@ -2592,16 +2692,16 @@ function gutterBrush(uc, lo, hi) {
 // Filter-reactive overlay: the distribution of the current filter's matches,
 // binned on the GLOBAL min/max so it aligns, drawn solid over the faint global.
 // Numeric (hist) only; stride-sampled across the matches so it stays cheap.
-async function refreshGutterFiltered() {
-  const c = current; if (!c) return;
+async function refreshGutterFiltered(c = current) {
+  if (!c || c.note) return;
   if (!showGutter || c.d.kind !== 'delimited' || !c.gutter || !c.filterResult || !c.filterResult.nums.length) {
-    if (c.gutterFiltered) { c.gutterFiltered = null; rerender(); }
+    if (c.gutterFiltered) { c.gutterFiltered = null; rerender(c); }
     return;
   }
   try {
     const g = await computeGutterFiltered(c.source, c.schema, c.dataStart, c.d.decimal, c.gutter, c.filterResult.nums);
-    if (current !== c) return;
-    c.gutterFiltered = g; rerender();
+    if (!alive(c)) return;
+    c.gutterFiltered = g; rerender(c);
   } catch (e) { console.warn('[lamina] filtered gutter failed', e); }
 }
 async function computeGutterFiltered(source, schema, dataStart, decimal, global, matchRows) {
@@ -2629,21 +2729,21 @@ async function computeGutterFiltered(source, schema, dataStart, decimal, global,
   return acc.map((a) => (a && a.any ? { kind: 'hist', bins: (() => { const mx = Math.max(...a.bins) || 1; return a.bins.map((x) => x / mx); })() } : null));
 }
 
-async function refreshGutter() {
-  const c = current; if (!c) return;
+async function refreshGutter(c = current) {
+  if (!c || c.note) return;
   c.gutterFiltered = null;                              // global changed → drop any stale filtered overlay
-  if (!showGutter || c.d.kind !== 'delimited') { c.gutter = null; return rerender(); }
+  if (!showGutter || c.d.kind !== 'delimited') { c.gutter = null; return rerender(c); }
   // Footer feedback only if the sample scan actually drags (huge file) — a 150ms
   // debounce, so a small file never flashes the message (and footer-reading tests stay clean).
-  const slow = setTimeout(() => { if (current === c) $('#meta').textContent = 'profiling columns…'; }, 150);
+  const slow = setTimeout(() => say(c, 'profiling columns…'), 150);
   try {
     const g = await computeGutterStats(c.source, c.schema, c.dataStart, c.d.decimal);
-    if (current !== c) return;                       // a newer file opened mid-scan
+    if (!alive(c)) return;                           // its tab closed (or it was read again) mid-scan
     applyGutterLogPrefs(c, g);
     c.gutter = g;
   } catch (e) { console.warn('[lamina] gutter stats failed', e); c.gutter = null; }
   finally { clearTimeout(slow); }
-  rerender();                                        // repaints with the bars + restores the footer meta (c._meta)
+  rerender(c);                                       // repaints with the bars + restores the footer meta (c._meta)
 }
 
 // Resolve each hist column's active log state: a per-column override (c.gutterLog)
@@ -3692,6 +3792,7 @@ function openSampleData() {
     const lito = (cu < 0.05 && au < 0.05) ? 'WASTE' : depth < 0.25 ? 'OXIDE' : depth < 0.45 ? 'TRANSITION' : 'SULPHIDE';
     rows.push([id++, x0 + i * 10, y0 + j * 10, z0 + k * 5, 10, 10, 5, au.toFixed(3), cu.toFixed(3), ag.toFixed(2), fe.toFixed(2), dens.toFixed(3), orep.toFixed(3), rec.toFixed(1), lito, 'Z' + (1 + Math.min(4, Math.floor(depth * 5)))].join(','));
   }
+  _openNext = 'tab';
   open('sample_blockmodel.csv', new TextEncoder().encode(rows.join('\n')));
   // The block model is generated top-down, so its first rows are the waste cap
   // (grades 0). Land a newcomer on the ORE instead: sort by copper grade
@@ -3740,8 +3841,8 @@ window.addEventListener('dragleave', (e) => { if (e.relatedTarget === null) docu
 window.addEventListener('drop', async (e) => {
   e.preventDefault();
   document.body.classList.remove('dragging');
-  const f = e.dataTransfer.files && e.dataTransfer.files[0];
-  if (f) { addRecent(f, null); openFile(f); }            // no FSAA handle from a drop → name-only recent
+  const fs = e.dataTransfer.files ? [...e.dataTransfer.files] : [];
+  for (const f of fs) { addRecent(f, null); await openInTab(f); }   // every dropped file → its own tab (no FSAA handle from a drop → name-only recent)
 });
 
 // ── filter box ──
@@ -3911,11 +4012,12 @@ _host = createHostApi({
 });
 window.lamina = _host.api;
 
-window._lamina = { shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
+window._lamina = { openInTab, setFocus, get views() { return [...views.values()]; }, get focused() { return focused; }, get rails() { return rails; }, shell, deliverBytes, doExport, laminaStatus, laminaColumnStats, open, openFile, applyFilter, toggleSort, reopen, gotoRow, hideColumn, showColumn, showAllColumns, setColType, setColFormat, toggleColorScale, setColScaleOpt, autofitAll, resetColWidths, showAllColumns, toggleColPanel, reorderCol, togglePin, scrollToColumn, residentEstimate, statsToTSV, gutterSampleRows, scanColumnStats, scanAllColumnStats, scanGroupBy, scanDataQuality, precomputeStats, showSummary, openGroupBy, computeGroupBy, openGradeTonnage, computeGradeTonnage, openGridSummary, computeGridSummary, openSampleData, showDataQuality, setGutterLog, toggleRecordPanel, renderRecordCard, updateSelStats, openFind, closeFind, findNext, findCountAll, addRecent, clearRecents, setRemember, openRecent, get recents() { return _recents; }, showColumnStats, copySelection, filterByValue, addCalc, removeCalc, openCalcEditor, openCalcManager, brushFilter, showBrushTip, showGutterTip, gutterClick, gutterDblClick, gutterTapFilter, gutterBrush, setBrushMode, exportToString, openExportDialog, saveLens, buildLens, applyLensView, applyLens, applyLensFromFile, sniffLens, setTheme, get theme() { return theme; }, pickFile, showHelp, cache: idbCache, build: __LAMINA_BUILD__, get brushMode() { return brushMode; }, get grid() { return grid; }, get lastScan() { return lastScan; }, get current() { return current; }, get calcs() { return current && current.calcs; }, get gutter() { return current && current.gutter; }, canWorker };
 
 // Build stamp in the footer (far right) — set once; persists past file meta updates.
 $('#build').textContent = __LAMINA_BUILD__;
 $('#build').title = `lamina build — ${__LAMINA_BUILD__} · verify at gentropic.org/security`;
+initWorkspace();                                       // the rails workspace the views live in
 applyTheme();                                          // sync data-theme + meta theme-color (the first-paint script set the attr; this keeps it authoritative)
 
 // Keep --tb (the layout's top offset) synced to the toolbar's ACTUAL height, so
@@ -3933,7 +4035,7 @@ applyTheme();                                          // sync data-theme + meta
 if ('launchQueue' in window && 'LaunchParams' in window) {
   window.launchQueue.setConsumer(async (params) => {
     if (!params || !params.files || !params.files.length) return;
-    try { const h = params.files[0]; const f = await h.getFile(); addRecent(f, h); openFile(f); } catch { /* permission / not a file */ }
+    for (const h of params.files) { try { const f = await h.getFile(); addRecent(f, h); await openInTab(f); } catch { /* permission / not a file */ } }
   });
 }
 
@@ -3975,9 +4077,9 @@ if (shell.present) {
   shell.intake(async (item) => {
     try {
       if (item.kind === 'file') {
-        await openFile(item.blob);                         // the mount's own footer status stands; the title bar carries the provenance
+        await openInTab(item.blob);                        // a shared file joins the open ones (the shell has one window); the title bar carries the provenance
         $('#fileName').title = `${item.name} — opened from the shell (${(item.size / 1048576).toFixed(1)} MB, ranged reads)`;
-      } else if (item.kind === 'text') open('shared text', new TextEncoder().encode(item.text));
+      } else if (item.kind === 'text') { _openNext = 'tab'; open('shared text', new TextEncoder().encode(item.text)); }
       else if (item.kind === 'error') $('#meta').textContent = `${item.error} (${item.name})`;
     } catch (e) { $('#meta').textContent = `could not open ${item.name || 'the shared file'}: ${e.message || e}`; }
   }).catch(() => { /* no intake plugin in this build */ });

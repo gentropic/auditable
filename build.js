@@ -2244,6 +2244,7 @@ if (target === 'lamina') {
     '@gcu/archive': '#archive', '@gcu/dm': '#dm', '@gcu/expr': '#expr', '@gcu/filterui': '#filterui', '@gcu/sluice': '#sluice', '@gcu/recon': '#recon', '@gcu/units': '#units', '@gcu/sheet': '#sheet', 'fflate': '#fflate', './idb-cache.js': '#idb-cache',
     '@gcu/leadacid': '#leadacid',             // the lead-acid shell shim (feature-detected; dormant on the web)
     '@gcu/parquet': '#parquet', './parquet-source.js': '#parquet-source', './host-api.js': '#host-api',
+    '@gcu/rails': '#rails',                   // the workspace: tabs + splits, one view per tab
   };
   const libs = [
     ['loom',    'ext/loom/index.js'],
@@ -2260,6 +2261,7 @@ if (target === 'lamina') {
     ['units',   'ext/units/index.js'],            // @gcu/units — grade/density unit declarations (block-model report)
     ['fflate',  'ext/archive/vendor/fflate.module.mjs'],
     ['leadacid', 'ext/leadacid/index.js'],         // @gcu/leadacid — intake + publish/share inside the Android shell
+    ['rails',   'ext/rails/index.js'],             // @gcu/rails — the tabs + splits the views live in
   ];
   const modules = [];
   for (const [name, rel] of libs) {
@@ -2309,6 +2311,17 @@ if (target === 'lamina') {
   let html = fs.readFileSync(path.join(lamDir, 'index.html'), 'utf8');
   html = html.replace(/<!-- dev bench[\s\S]*?<script src="[^"]*bench\.js"><\/script>\s*/, '');   // dev-only bench
   html = html.replace(/<script type="importmap">[\s\S]*?<\/script>\s*/, '');
+  // the dev page links ext stylesheets (rails) and so allows style-src 'self'; the artifact INLINES them
+  // and takes 'self' back out — the shipped CSP stays exactly as strict as before
+  html = html.replace(/<link rel="stylesheet" href="(\.\.\/\.\.\/ext\/[\w/.-]+\.css)">/g, (_, rel) => {
+    const cp = path.join(lamDir, rel);
+    if (!fs.existsSync(cp)) { console.error(`Error: ${rel} not found`); process.exit(1); }
+    return `<style data-from="${rel.replace('../../', '')}">
+${fs.readFileSync(cp, 'utf8').trim()}
+</style>`;
+  });
+  if (!html.includes("style-src 'self' 'unsafe-inline';")) { console.error("Error: lamina's dev CSP no longer reads style-src 'self' 'unsafe-inline'"); process.exit(1); }
+  html = html.replace("style-src 'self' 'unsafe-inline';", "style-src 'unsafe-inline';");
   html = html.replace(/<script type="module" src="\.\/js\/app\.js"><\/script>/, () => `<script>\n${bootStamped}\n</script>`);
 
   // Third-party notices — lamina is MIT, but bundles archive codecs via @gcu/archive:
